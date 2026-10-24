@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>PptInk</AssemblyName>
+    <RootNamespace>PptInk</RootNamespace>
+    <!-- 入口指向 Program.Main（单实例互斥 + 静默启动参数解析）；
+         App.g.cs 生成的 Main 仍存在但非入口，其 new App() 依赖构造函数默认参数 -->
+    <StartupObject>PptInk.Program</StartupObject>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Version>1.0.0-beta</Version>
+    <Product>PPT 批注工具（希沃大屏教学版）</Product>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- 单文件发布，配套内嵌 Python 运行时由安装器（installer/）负责合并 -->
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <!-- 唯一第三方依赖：MoonSharp（纯托管 Lua 实现，无原生 DLL，~400KB）
+       —— 插件脚本沙箱（Preset_SafeSandbox 无 io/os，天然隔离）。
+       其余全走 BCL：托盘 WinForms 互操作、COM dynamic、NamedPipe、GDI+ 截图。 -->
+  <ItemGroup>
+    <PackageReference Include="MoonSharp" Version="2.0.0.0" />
+  </ItemGroup>
+
+  <!-- WPF + WinForms 双框架：SDK 隐式注入的 global using(System.Windows.Forms/System.Drawing)
+       会与 WPF 类型（Point/Color/Brush/Pen/Button/TextBox/Application/Timer...）全面歧义(CS0104)。
+       移除隐式 using，真正需要 WinForms 的文件（托盘/截图）已显式 using。 -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <!-- 托盘图标：TrayIconController.LoadIcon 经 pack URI 加载（Resource 才可 pack 寻址） -->
+  <ItemGroup>
+    <Resource Include="Assets\tray.ico" />
+  </ItemGroup>
+</Project>

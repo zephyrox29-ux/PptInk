@@ -1,0 +1,4 @@
+# PptInk AI 桥依赖（安装到 <安装目录>\bridge\python\ 嵌入式运行时）
+numpy>=1.24
+opencv-python>=4.8 ; sys_platform == 'win32'   # 可选增强：minAreaRect 精化矩形/椭圆
+# M5+ 预留：onnxruntime>=1.16（电路图符号/图表分类模型）

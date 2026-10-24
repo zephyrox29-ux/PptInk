@@ -1,0 +1,28 @@
+# .NET build output
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+
+# Python-generated files
+**/__pycache__/
+**/*.py[cod]
+.python-version
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# App runtime data (never package user-specific settings/logs)
+logs/
+config.json
+PptInk导出/
+
+# Local tooling
+.DS_Store
+Thumbs.db
+
+# Portable publish artifacts
+artifacts/

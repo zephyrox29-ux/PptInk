@@ -1,0 +1,17 @@
+{
+  "_comment": "PptInk 手绘识别配置：形状开关 + 全部阈值可调。删除本文件即回内置默认。",
+  "enabled": ["line", "arrow", "dashed", "dotted", "check", "cross",
+              "triangle", "quad", "polygon", "circle", "ellipse", "wave"],
+  "_optional_shapes": ["heart", "star", "cloud"],
+  "score_threshold": 0.52,
+  "closure_tol": 0.18,
+  "snap_angle": 7.0,
+  "line_dev_ratio": 0.022,
+  "dash_min_gaps": 3,
+  "dash_max_cv": 0.45,
+  "tolerances": {
+    "line": 0.022, "arrow": 0.060, "triangle": 0.055, "quad": 0.070,
+    "polygon": 0.060, "circle": 0.045, "ellipse": 0.055,
+    "check": 0.055, "cross": 0.055, "wave": 0.075
+  }
+}
