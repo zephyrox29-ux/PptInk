@@ -1,0 +1,22 @@
+{
+  "magic": 1,
+  "id": "com.classroom.timer",
+  "name": "课堂正倒计时",
+  "version": "1.0.0",
+  "author": "PptInk 生态",
+  "description": "面板类插件示例：宿主渲染计时面板（文本+滑条+按钮），脚本驱动计时逻辑",
+  "entry": "main.lua",
+  "panel": {
+    "dock": "float",
+    "width": 240,
+    "height": 170,
+    "alpha": 0.9,
+    "showInIsland": true,
+    "elements": [
+      { "type": "text", "id": "display", "text": "05:00", "onEvent": "onTick" },
+      { "type": "slider", "min": 10, "max": 3600, "value": 300, "onEvent": "onDurationChange" },
+      { "type": "button", "text": "开始 / 暂停", "onEvent": "onToggle" }
+    ]
+  },
+  "permissions": []
+}

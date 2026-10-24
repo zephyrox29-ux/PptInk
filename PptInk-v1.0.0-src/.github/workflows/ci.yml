@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/requirements-dev.txt
+      - name: Install test dependencies
+        run: python -m pip install -r python/requirements-dev.txt
+      - name: Run recognition and bridge tests
+        working-directory: python
+        env:
+          OPENBLAS_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        run: python -m pytest -q
+
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore
+        run: dotnet restore PptInk.sln
+      - name: Build Release
+        run: dotnet build PptInk.sln --configuration Release --no-restore
+      - name: Publish self-contained portable x64 package
+        shell: pwsh
+        run: ./scripts/build-portable.ps1 -Configuration Release -Runtime win-x64
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: PptInk-v1.0.0-portable-win-x64
+          path: artifacts/PptInk-v1.0.0-portable-win-x64.zip
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,17 @@
+<Application x:Class="PptInk.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnExplicitShutdown">
+    <!-- 不设 StartupUri：S0 后台静默，无窗口。
+         ShutdownMode=OnExplicitShutdown：托盘"退出"才结束进程，防止误关最后一个窗口导致常驻失效。 -->
+    <Application.Resources>
+        <ResourceDictionary>
+            <!-- Tokens：静态默认值（ThemeManager 启动时 ApplyFromConfig 覆盖同键并补齐运行时键，
+                 窗口一律 DynamicResource 引用 → 主题/材质/强调色热切换零重建）。 -->
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="UI/Theme/Tokens.xaml"/>
+                <ResourceDictionary Source="UI/Theme/Icons.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
