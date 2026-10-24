@@ -1,0 +1,223 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!-- ============================================================
+         砚台令牌体系 v0.8.0：岱青 + 衢青
+         设计观点：配色取意「岱山衢青」——岱青为底（山岚墨青，深色主题
+         整体色温统一到青调，弃中性蓝黑），衢青为强调（晴空映山之青，
+         含灰克制，深底 6.7:1 / 浅底 6.9:1 双版本达标 WCAG AA）。
+         拒绝紫蓝渐变与高饱和朱砂的通用观感；琥珀仅作高危警示。
+         五系令牌：色彩 / 圆角 / 间距 / 阴影 / 动效。
+         色彩键为静态默认，ThemeManager 启动时按主题/材质运行时覆盖同键。
+         ============================================================ -->
+
+    <!-- ===== 1. 色彩系 ===== -->
+
+    <!-- 面板底色：岱青（山岚墨青，禁纯黑）+ 高不透明度，幻灯片主体隐约透出 -->
+    <Color x:Key="PanelColor">#F216201E</Color>
+    <SolidColorBrush x:Key="PanelBrush" Color="{StaticResource PanelColor}"/>
+    <SolidColorBrush x:Key="PanelBorderBrush" Color="#30FFFFFF"/>
+    <Color x:Key="PanelColorSubtle">#CC16201E</Color>
+
+    <!-- 选中态：浅色圆角色块（非高饱和强调）；激活态由代码用 AccentSoft 点亮 -->
+    <SolidColorBrush x:Key="ItemSelectedBrush" Color="#22FFFFFF"/>
+    <SolidColorBrush x:Key="ItemHoverBrush" Color="#15FFFFFF"/>
+
+    <!-- 文字层级（青调暖白 / 青灰） -->
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#EEF2F0"/>
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#A3B5B0"/>
+    <SolidColorBrush x:Key="TextDisabledBrush" Color="#5E716C"/>
+
+    <!-- 强调色：衢青（晴空映山，含灰克制）；辅助：警示琥珀（仅高危操作） -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#78AFA5"/>
+    <SolidColorBrush x:Key="AccentSoftBrush" Color="#6678AFA5"/>
+    <SolidColorBrush x:Key="AccentAmberBrush" Color="#D9A05B"/>
+
+    <!-- 浮岛默认色板（教师高频色） -->
+    <x:Array x:Key="PaletteDefaults" Type="Color">
+        <Color>#E8442E</Color> <!-- 朱红批注 -->
+        <Color>#F5D000</Color> <!-- 荧光黄 -->
+        <Color>#3D9BE8</Color> <!-- 板书蓝 -->
+        <Color>#34B37A</Color> <!-- 板书绿 -->
+        <Color>#F2F3F5</Color> <!-- 白 -->
+    </x:Array>
+
+    <!-- ===== 2. 圆角系（文档化约定，不再设资源令牌——v0.8.0 清理死令牌） =====
+         UI 为 C# 代码构建，资源令牌无引用链路；改用「嵌套公式」统一梯度：
+           外壳圆角 = 内层控件圆角 + 外壳 Padding
+         实际梯度（硬编码于各构建处，改值请全局搜 CornerRadius）：
+           胶囊 999（翻页岛 32 = 高度一半的胶囊形）
+           大岛  20（SegmentIsland：内按钮 14 + 垂直 pad 6）
+           中岛  18（EraseModeIsland：内按钮 14 + pad 4）
+           窗体/气泡/按钮 14（ToolbarWindow / SettingsWindow / ShapeAssistBubble）
+           卡片 10–12，徽标/开关 4–6（细碎控件就近取值） -->
+
+    <!-- ===== 3. 间距系（4px 基准阶梯） ===== -->
+    <sys:Double x:Key="Space1">4</sys:Double>
+    <sys:Double x:Key="Space2">8</sys:Double>
+    <sys:Double x:Key="Space3">12</sys:Double>
+    <sys:Double x:Key="Space4">16</sys:Double>
+    <sys:Double x:Key="Space6">24</sys:Double>
+    <sys:Double x:Key="Space8">32</sys:Double>
+
+    <!-- ===== 4. 阴影系（海拔两级：浮岛常驻 / 弹出层） ===== -->
+    <!-- AllowsTransparency 窗口无系统阴影，内容层自带柔和漫射；窗口移动是
+         Win32 层移动不触发内容重绘，Effect 常驻成本可控（仅小面积面板）。
+         v0.8.0：不透明度收敛（0.32→0.28），青调深底上更沉静不脏 -->
+    <DropShadowEffect x:Key="ShadowChrome" BlurRadius="22" ShadowDepth="5" Direction="270" Opacity="0.28"/>
+    <DropShadowEffect x:Key="ShadowChromeStrong" BlurRadius="30" ShadowDepth="9" Direction="270" Opacity="0.36"/>
+
+    <!-- ===== 5. 动效系（v0.8.0：唤起 220ms 与 PopOpen 同拍；淡出 160ms；弹簧 300ms 轻托） ===== -->
+    <Duration x:Key="ShowDuration">0:0:0.22</Duration>
+    <Duration x:Key="HideDuration">0:0:0.16</Duration>
+    <sys:Double x:Key="MotionSpringMs">300</sys:Double>
+    <CubicEase x:Key="EaseShow" EasingMode="EaseOut"/>
+    <ExponentialEase x:Key="EaseHide" EasingMode="EaseIn"/>
+
+    <!-- ===== 尺寸：大屏触控目标 ≥ 56px ===== -->
+    <sys:Double x:Key="TouchTargetSize">64</sys:Double>
+    <sys:Double x:Key="ToolbarButtonSize">56</sys:Double>
+
+    <!-- ============================================================
+         共用样式（v0.7.0 上移 App 级：主工具栏 / 副岛 / 翻页岛一份真相，
+         灵动岛家族视觉零割裂）
+         ============================================================ -->
+
+    <!-- 工具按钮：56px 触控目标，圆角 14；只提供按压反馈，不依赖鼠标悬停 -->
+    <Style x:Key="ToolButtonStyle" TargetType="Button">
+        <Setter Property="Width" Value="56"/>
+        <Setter Property="Height" Value="56"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="ToolTipService.InitialShowDelay" Value="400"/>
+        <Setter Property="Stylus.IsPressAndHoldEnabled" Value="False"/>
+        <Setter Property="Stylus.IsFlicksEnabled" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" CornerRadius="14" Background="{TemplateBinding Background}"
+                            Margin="2" Padding="10">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource ItemSelectedBrush}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- 图标默认填充：暖白；选中态由 ToolbarFactory.SetToolActive 染朱砂 -->
+    <Style x:Key="IconFill" TargetType="Path">
+        <Setter Property="Fill" Value="{DynamicResource TextPrimaryBrush}"/>
+        <Setter Property="Stretch" Value="Uniform"/>
+        <Setter Property="Width" Value="24"/>
+        <Setter Property="Height" Value="24"/>
+    </Style>
+
+    <!-- 组间分隔线：1px 发丝 -->
+    <Style x:Key="GroupSeparator" TargetType="Rectangle">
+        <Setter Property="Width" Value="1"/>
+        <Setter Property="Fill" Value="{DynamicResource PanelBorderBrush}"/>
+        <Setter Property="Margin" Value="2,10"/>
+        <Setter Property="RadiusX" Value="0.5"/>
+        <Setter Property="RadiusY" Value="0.5"/>
+    </Style>
+
+    <!-- ============================================================
+         v0.9.7 触摸友好滑块：大屏远距/手指/红外笔操作优化
+         设计要点（保留 WPF Track 内建布局逻辑，仅替换 Thumb 与轨道视觉）：
+         - Thumb 28×28 圆球（原默认 ~12px，远低于 44px 触摸目标标准）
+         - Track 两侧 RepeatButton 透明但提供隐形命中区，点轨道即跳转
+         - 轨道 6px 圆角（原默认 2px 细线，触摸难落指）
+         - Thumb 拖动时染强调色（远距可见的操作反馈）
+         - 外层高度 44px（对齐触控目标下限），垂直居中
+         ============================================================ -->
+
+    <!-- 滑块轨道两侧隐形点击区（DecreaseRepeatButton / IncreaseRepeatButton） -->
+    <Style x:Key="SliderRepeatButtonStyle" TargetType="RepeatButton">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RepeatButton">
+                    <Border Background="Transparent"/>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- 水平滑块 Thumb：28px 圆球，按下染强调色 + 轻微放大 -->
+    <Style x:Key="SliderThumbHorizontalStyle" TargetType="Thumb">
+        <Setter Property="Width" Value="28"/>
+        <Setter Property="Height" Value="28"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Thumb">
+                    <Grid>
+                        <Ellipse x:Name="ball" Fill="#F5F7F6" Stroke="{DynamicResource AccentBrush}"
+                                 StrokeThickness="2" RenderTransformOrigin="0.5,0.5" IsHitTestVisible="False"/>
+                        <Ellipse x:Name="dot" Width="10" Height="10" Fill="{DynamicResource AccentBrush}"
+                                 HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsDragging" Value="True">
+                            <Setter TargetName="ball" Property="Fill" Value="{DynamicResource AccentBrush}"/>
+                            <Setter TargetName="dot" Property="Fill" Value="#F5F7F6"/>
+                            <!-- Trigger 的 TargetName 只能指向 FrameworkElement（Ellipse），
+                                 不能指向 Freezable（ScaleTransform）—— 改直接替换 RenderTransform 属性。 -->
+                            <Setter TargetName="ball" Property="UIElement.RenderTransform">
+                                <Setter.Value>
+                                    <ScaleTransform ScaleX="1.18" ScaleY="1.18"/>
+                                </Setter.Value>
+                            </Setter>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- 触摸友好水平滑块：44px 高 / 28px Thumb / 6px 轨道 / 点轨即跳 -->
+    <Style x:Key="TouchSliderStyle" TargetType="Slider">
+        <Setter Property="Height" Value="44"/>
+        <Setter Property="MinWidth" Value="120"/>
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="IsMoveToPointEnabled" Value="True"/>
+        <Setter Property="Stylus.IsPressAndHoldEnabled" Value="False"/>
+        <Setter Property="Stylus.IsFlicksEnabled" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Slider">
+                    <Border Background="Transparent" Padding="0,6">
+                        <Grid VerticalAlignment="Center">
+                            <!-- 轨道：6px 圆角浅带 + 强调色填充左段 -->
+                            <Border Height="6" CornerRadius="3" VerticalAlignment="Center"
+                                    Background="{DynamicResource ItemHoverBrush}"/>
+                            <Track x:Name="PART_Track" VerticalAlignment="Center">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource SliderRepeatButtonStyle}" Command="Slider.DecreaseLarge"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource SliderRepeatButtonStyle}" Command="Slider.IncreaseLarge"/>
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource SliderThumbHorizontalStyle}"/>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

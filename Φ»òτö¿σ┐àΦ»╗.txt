@@ -1,0 +1,49 @@
+【源码归档说明｜2026-10-22】
+本 ZIP 是融绘 PptInk v0.9.6 的源码归档，不包含 PptInk.exe、嵌入式 Python 运行时或安装器。
+下文「双击运行/便携包」类描述属二进制试用包的操作说明，不能据此认为源码 ZIP 可直接运行。
+
+============================================================
+【构建指引（Windows x64）】
+============================================================
+1. 依赖：Windows x64 + .NET 8 SDK（含 WPF）。AI 识别另需 numpy。
+2. 编译：src\PptInk.App 下 `dotnet build PptInk.App.csproj -c Release -r win-x64`
+     或根目录 `dotnet build PptInk.sln -c Release`。
+3. 便携打包：scripts\build-portable.ps1（-PythonRuntimePath 传入完整 Windows 嵌入式运行时
+    目录可内置 Python；**该目录必须包含 numpy.libs（含 libopenblas64__*.dll），否则
+    目标机 import numpy 会失败、AI 识别不可用**）。
+4. CI：.github\workflows\ci.yml。
+5. AI 桥运行期布局：发布目录\bridge\ 放 ink_bridge.py/pptink_recog.py/recognizer_config.json/
+   requirements.txt，嵌入式运行时置于 bridge\python\（含 python.exe 与 numpy）。
+
+============================================================
+【★ v0.9.6 源码变更（实机反馈 8 项）】
+============================================================
+1) 统一触摸拖动（UI\DragKit.cs）：全局拖动独占（_activeOwner，同一时刻只一个元素在拖）+
+   仅手柄触发；翻页岛（UI\PageTurnIsland.cs）移除拖动、恒定停靠左右下角；
+   StageElement.EnableIdleFade（闲置 2.5s → 0.45 半透明，交互即凝实），工具栏/翻页岛接线；
+   设置窗口标题栏改 DragKit（UI\SettingsWindow.cs）。
+2) 全屏吸附：SnapKit / Toolbar.Drag / StageElement / Toast / Toolbar.Palette / PageTurnIsland /
+   SegmentIsland / Toolbar.Layout / PluginPanels / UiOrchestrator 的 ShowScreen.WorkBounds
+   → ShowScreen.Bounds（放映无任务栏）。
+3) 面板百分比大小：UI\Toolbar.Palette.cs 面板宽按屏幕宽百分比（clamp 260~420）。
+4) 按钮触摸直捕：UI\ToolbarFactory.cs·PressWire 改三源（触摸/笔/鼠标）直触发 + 350ms 去重。
+5) 更多设置项：AppConfig.ToolbarScale + 工具栏 LayoutTransform 缩放（Toolbar.ApplyScale）+
+   设置滑条；擦除模式/橡皮大小设置。
+6) 圈选自动闭合（Ink\EraseService.cs·TryLassoErase，改用 PolygonArea 最小面积保护）；
+   像素级橡皮（Ink\EraseService.cs·ErasePartial/SplitStroke + Ink\HistoryTree.cs·ReplaceStrokesOp，
+   只擦轨迹覆盖的局部，其余保留；AppConfig.EraseMode "pixel"/"stroke"）。
+7) AI 识别根因：内置 Python 运行时补 numpy.libs（Windows OpenBLAS）。
+8) 多指连线：UI\UnifiedStageWindow.Ink.cs·RawInkPlugIn 指针栅栏（StylusDeviceId）+ 陈旧超时 + 瞬跳过滤。
+
+编译状态：Linux 交叉编译（EnableWindowsTargeting）Release 通过，0 错 0 警。
+          真机行为需 Windows 目标设备验收（可用采样模式采集数据）。
+
+============================================================
+【历史摘要】
+============================================================
+   v0.9.6：拖动统一/全屏吸附/面板百分比/按钮触摸直捕/工具栏大小/像素级橡皮/识别根因/多指连线
+   v0.9.5：识别根因(numpy.libs)/多指连线/全屏吸附/圈选自动闭合
+   v0.9.4：工具栏拆分/内置 Python/采样模式
+   v0.9.3：工程审计整改底座（sln/CI/打包脚本/审计报告）
+   v0.9.2：AI Power 开关/识别实用化/擦除加固/上帝类拆分
+   v0.9.0：单窗口架构（多窗口冲突终结）

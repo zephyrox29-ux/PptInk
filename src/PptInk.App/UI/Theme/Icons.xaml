@@ -1,0 +1,41 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ===== 全局 SVG 矢量图标（StreamGeometry，任意 DPI 无损放大；冻结由 XAML 加载器完成） =====
+         工具栏 / 设置中心 / 浮岛共用一份字典（Application 级，FindResource 沿树可达）。 -->
+
+    <!-- 书写工具组 -->
+    <StreamGeometry x:Key="IconTouch">M11 3a1.5 1.5 0 0 1 1.5 1.5V11h.5V5a1.5 1.5 0 0 1 3 0v6h.5V6.5a1.5 1.5 0 0 1 3 0V14c0 4-2.5 7-6.5 7S7 18 7 14v-3.5a1.5 1.5 0 0 1 3 0V12h1V4.5A1.5 1.5 0 0 1 11 3z</StreamGeometry>
+    <StreamGeometry x:Key="IconPen">M3 21l3.6-.92L19.1 7.58 16.42 4.9 3.92 17.4 3 21zm14.84-14.8 1.38-1.38a1.2 1.2 0 0 0 0-1.7l-.34-.34a1.2 1.2 0 0 0-1.7 0L15.8 4.16l2.04 2.04z</StreamGeometry>
+    <StreamGeometry x:Key="IconHighlighter">M6 16h9.2l5.3-8.9-3.4-2.05L6 13.9V16zM4 18h11v2H4z</StreamGeometry>
+    <StreamGeometry x:Key="IconEraser">M8.2 4.2 19 9l-5.4 9.4-10.8-4.8L8.2 4.2zM4 19h13v2H4z</StreamGeometry>
+    <StreamGeometry x:Key="IconLasso">M12 4c4.4 0 8 2.46 8 5.5S16.4 15 12 15c-.7 0-1.38-.06-2-.17-.9 2.3-3.1 3.4-4.6 3.67.6-.9.95-1.9.87-2.9C3.87 14.6 4 13.4 4 9.5 4 6.46 7.6 4 12 4z</StreamGeometry>
+
+    <!-- 操作组 -->
+    <StreamGeometry x:Key="IconUndo">M8 5 3 10l5 5v-3.2h5.5a4 4 0 0 1 0 8H10V17h3.5a7 7 0 0 0 0-14H8V5z</StreamGeometry>
+    <StreamGeometry x:Key="IconRedo">M16 5l5 5-5 5v-3.2h-5.5a4 4 0 0 0 0 8H14V17h-3.5a7 7 0 0 1 0-14H16V5z</StreamGeometry>
+    <StreamGeometry x:Key="IconAi">M12 2l2.3 6.5L21 10.8l-6.7 2.3L12 20l-2.3-6.9L3 10.8l6.7-2.3L12 2z</StreamGeometry>
+    <StreamGeometry x:Key="IconPlugin">M5 5h6v6H5zM13 5h6v6h-6zM5 13h6v6H5zM13 13h6v6h-6z</StreamGeometry>
+    <StreamGeometry x:Key="IconGrip">M9 6h2.4v2.4H9zM12.6 6H15v2.4h-2.4zM9 10.8h2.4v2.4H9zM12.6 10.8H15v2.4h-2.4zM9 15.6h2.4V18H9zM12.6 15.6H15V18h-2.4z</StreamGeometry>
+
+    <!-- 翻页组 -->
+    <StreamGeometry x:Key="IconPrev">M15.5 4.5 7.5 12l8 7.5v-15z</StreamGeometry>
+    <StreamGeometry x:Key="IconNext">M8.5 4.5l8 7.5-8 7.5v-15z</StreamGeometry>
+    <StreamGeometry x:Key="IconStop">M6 6h12v12H6z</StreamGeometry>
+
+    <!-- 设置中心 -->
+    <StreamGeometry x:Key="IconClose">M5.7 4.3 19.7 18.3 18.3 19.7 4.3 5.7z M4.3 18.3 18.3 4.3 19.7 5.7 5.7 19.7z</StreamGeometry>
+    <StreamGeometry x:Key="IconUp">M12 4l8 9h-5.5v7h-5v-7H4z</StreamGeometry>
+    <StreamGeometry x:Key="IconDown">M12 20l-8-9h5.5V4h5v7H20z</StreamGeometry>
+    <StreamGeometry x:Key="IconInstall">M11 3h2v9.2l3.4-3.4 1.4 1.4L12 16 6.2 10.2l1.4-1.4L11 12.2z M5 18h14v2H5z</StreamGeometry>
+    <StreamGeometry x:Key="IconExport">M12 8l4 4h-2.6v8h-2.8v-8H8z M5 18h14v2H5z</StreamGeometry>
+    <StreamGeometry x:Key="IconFolder">M3 5h6.6l2 2H21v12H3z</StreamGeometry>
+    <StreamGeometry x:Key="IconReset">M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z</StreamGeometry>
+
+    <!-- 引导 · 擦除扩展（v0.8.1 归一：原分散于 OnboardingGuideWindow 内联字典与
+         ToolbarCatalog.IconSwipe——现统一为单一来源，杜绝同源图标重复维护不一致） -->
+    <StreamGeometry x:Key="IconPalette">M12 3C7 3 3 6.9 3 11.7c0 2.2 1 4 2.6 4 .8 0 1.3-.5 1.7-1.3.3-.7.9-1 1.6-1 1.5 0 2.7 1.2 2.7 2.8 0 .4.4.9 1 .9 1.6 0 2.8-1 3.9-2.9.8-1.4 1.2-2.7 1.2-3.9C16.7 5 14.6 3 12 3zm-4.2 5.2a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm2.6-2.5a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm3.5.2a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4zm2.6 2.3a1.2 1.2 0 1 1 0-2.4 1.2 1.2 0 0 1 0 2.4z</StreamGeometry>
+    <StreamGeometry x:Key="IconSparkle">M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9L12 2zm5 12l.9 2.6L20.5 17.5l-2.6.9L17 21l-.9-2.6-2.6-.9 2.6-.9L17 14z</StreamGeometry>
+    <StreamGeometry x:Key="IconCheck">M10 15.6 6.4 12l-1.4 1.4L10 18.4 19 9.4 17.6 8 10 15.6z</StreamGeometry>
+    <StreamGeometry x:Key="IconSwipe">M4 3l7.2 7.2-2.4 2.4L4 7.8V3zm10.6 8.4c2 2 3.4 4.6 3.4 6.6 0 .6-.4 1-1 1-2 0-4.6-1.4-6.6-3.4L6.8 12.6l4.2-4.2 3.6 3zM3.6 19.4l3-3 1.4 1.4-3 3z</StreamGeometry>
+</ResourceDictionary>
