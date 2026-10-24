@@ -148,6 +148,10 @@ internal sealed class TimerElement : StageElement
             Toast.Show("面板放不下。关掉调试面板，或把显示缩放调小。");
     }
     public void HidePanel() => HideBorrowedAware();
+
+    /// <summary>宿主停用钩子：HidePanel 只折叠元素不停表，停用不停表会让 1s tick
+    /// 在面板隐藏后永久空转（正计时模式永不自停，倒计时归零还会弹「时间到」）。</summary>
+    public void StopForHost() => _timer.Stop();
 }
 
 // ==================== 焦点聚光灯遮罩 ====================
@@ -378,6 +382,10 @@ internal sealed class PickElement : StageElement
             Toast.Show("面板放不下。关掉调试面板，或把显示缩放调小。");
     }
     public void HidePanel() => HideBorrowedAware();
+
+    /// <summary>宿主停用钩子：HidePanel 只折叠元素不停表，停用不停表会让 70ms 滚动
+    /// tick 在面板隐藏后永久空转（与面板内「停！」/「×」按钮语义对齐）。</summary>
+    public void StopForHost() => _roll.Stop();
 
     private UIElement MakeButtons()
     {

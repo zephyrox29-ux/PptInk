@@ -347,7 +347,8 @@ public sealed partial class UnifiedStageWindow : Window
             : InkInputMode.Ink;
 
     /// <summary>三档输入模式切换（v0.8.2 需销毁重建窗口；单窗口下仅切换
-    /// 墨迹层画布/底刷/通道门禁组合，板书与 UI 状态零丢失）。</summary>
+    /// 墨迹层画布/底刷/通道门禁组合，板书与 UI 状态零丢失）。仅激活态可见 ——
+    /// 隐藏态（S0/避让）切档不唤起窗口，显示职责归 ActivateStage。</summary>
     public void SetInputMode(string mode)
     {
         var nextMode = mode is "compat" or "super" ? mode : "touch";
@@ -371,7 +372,11 @@ public sealed partial class UnifiedStageWindow : Window
                 _inputMode = nextMode;
             }
             ApplySurface();
-            ShowSilent();
+            // 仅激活态允许本方法触达显示：未放映（S0/希沃避让）时切档绝不唤起全屏 Topmost
+            // 舞台 —— 否则 super 档是一整屏无控件的不透明画布、touch 档（逐像素环境）
+            // 是 alpha=1 的隐形输入黑洞，工具栏全 Collapsed、看门狗因 !_active 不自愈，
+            // 用户只能强杀进程。显示职责归 ActivateStage / 编排器 _overlayWanted 分支。
+            if (_active) ShowSilent();
             _forceRecompose = true;   // 画布组合已变：强制重合成页面缓存（原切档=重建窗口、缓存全新）
         }
         Invalidate();

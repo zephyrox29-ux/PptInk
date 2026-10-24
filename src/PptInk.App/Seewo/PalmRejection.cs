@@ -59,16 +59,19 @@ public sealed class PalmRejection
 
     public void ApplyProfile(DeviceProfile profile) => _profile = profile;
 
-    /// <summary>实际放映屏物理宽高（px）：优先 ShowScreen 实测（档案 ScreenWidthPx 在
-    /// 非 1080p/非 4K 笔记本上失配 —— 2160 物理宽屏配 1920 档案会造成右侧 240px 触摸死区）。</summary>
-    private (double W, double H) ScreenPhysicalPx()
+    /// <summary>实际放映屏物理矩形（px，虚拟桌面全局坐标）：优先 ShowScreen 实测（档案 ScreenWidthPx 在
+    /// 非 1080p/非 4K 笔记本上失配 —— 2160 物理宽屏配 1920 档案会造成右侧 240px 触摸死区）。
+    /// Bounds 是 DIP 且原点可为非 (0,0)（扩展屏部署），乘 DpiScale 还原为全局物理原点+尺寸；
+    /// 异常回退档案宽高时原点取 (0,0)（单主屏口径）。</summary>
+    private (double X, double Y, double W, double H) ScreenPhysicalRectPx()
     {
         try
         {
             var b = ShowScreen.Bounds;
-            return (b.Width * ShowScreen.DpiScale, b.Height * ShowScreen.DpiScale);
+            double s = ShowScreen.DpiScale;
+            return (b.Left * s, b.Top * s, b.Width * s, b.Height * s);
         }
-        catch { return (_profile.ScreenWidthPx, _profile.ScreenHeightPx); }
+        catch { return (0, 0, _profile.ScreenWidthPx, _profile.ScreenHeightPx); }
     }
 
     public bool IsInGestureZone(Point p)
@@ -76,7 +79,11 @@ public sealed class PalmRejection
         // 红外框机型门禁（v0.3.0）：手势区是希沃系统边框手势的避让区，
         // 笔记本/普通电容屏上不存在该交互，启用只会制造边缘死区
         if (!RespectGestureZone || !_profile.IsInfraredFrame) return false;
-        var (w, h) = ScreenPhysicalPx();
+        // p 是虚拟桌面全局物理 px（WM_POINTER rcContact 原始值），须先减放映屏物理原点
+        // 平移到板面本地坐标再比四边手势区 —— 否则扩展屏部署（放映屏原点非 (0,0)）下
+        // 判定区间整体错位：板在主屏右侧时右半块被误拒，板在主屏左侧时整板被误拒
+        var (x, y, w, h) = ScreenPhysicalRectPx();
+        p = new Point(p.X - x, p.Y - y);
         return p.X < _profile.GestureZoneLeftPx ||
                p.X > w - _profile.GestureZoneRightPx ||
                p.Y < _profile.GestureZoneTopPx ||

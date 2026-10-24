@@ -15,7 +15,8 @@
     <StartupObject>PptInk.Program</StartupObject>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
-    <Version>1.0.0</Version>
+    <!-- 版本号单一来源：打包脚本读这里，设置页"关于"读程序集 —— 改版本只改这一处 -->
+    <Version>1.1.0</Version>
     <Product>PPT 批注工具（希沃大屏教学版）</Product>
     <InvariantGlobalization>false</InvariantGlobalization>
     <!-- 单文件发布，配套内嵌 Python 运行时由安装器（installer/）负责合并 -->

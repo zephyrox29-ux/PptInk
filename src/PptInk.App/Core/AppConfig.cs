@@ -305,7 +305,18 @@ public sealed class AppConfig
                 return cfg;
             }
         }
-        catch { /* 配置损坏时回退默认，绝不阻塞启动 */ }
+        catch (Exception ex)
+        {
+            // 配置损坏：回退默认（绝不阻塞启动），但不再静默 —— 备份坏文件并记日志。
+            // 原先 catch{} 直接吞：手滑改错一个逗号，全部设置无痕丢失，用户和售后都无从知晓。
+            try
+            {
+                if (File.Exists(Path_))
+                    File.Copy(Path_, Path_ + ".bad-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"), overwrite: false);
+            }
+            catch { }
+            try { AppLog.Instance.Warn($"config.json 损坏，已备份并回退默认：{ex.Message}"); } catch { }
+        }
         return new AppConfig();
     }
 

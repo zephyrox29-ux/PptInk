@@ -130,6 +130,24 @@ public sealed class PptController : IDisposable
         catch { _cachedApp = null; return false; }
     }
 
+    /// <summary>取当前演示文稿身份（ActivePresentation.FullName）：换课件检测用
+    /// （InkEngine.BeginPresentationSession）。失败返回 false —— 兜底通道检测下身份未知，
+    /// 调用方保持既有行为（不重置墨迹），绝不误清板书。</summary>
+    public bool TryGetPresentationIdentity(out string identity)
+    {
+        identity = "";
+        try
+        {
+            var app = GetApp();
+            if (app is null) return false;
+            var name = (string)app.ActivePresentation.FullName;
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            identity = name;
+            return true;
+        }
+        catch { _cachedApp = null; return false; }
+    }
+
     /// <summary>向指定放映窗口投递 ESC（COM view.Exit() 在个别版本/放映状态下不生效时的强力兜底）。</summary>
     public static void PostEscToWindow(IntPtr hwnd)
     {
@@ -185,10 +203,12 @@ public sealed class PptController : IDisposable
         return null;
     }
 
-    /// <summary>向放映窗口投递键消息（兜底翻页）。若放映窗口已丢失则广播前台。</summary>
+    /// <summary>向放映窗口投递键消息（兜底翻页）。放映窗口已丢失时直接不动作：
+    /// v1.1.0 修复 —— 原先回退发给前台任意窗口，退映回收的窗口期里按「下一页」会把
+    /// PageDown 发给浏览器/资源管理器、ESC 可能关掉别人的对话框（输入副作用越界）。</summary>
     private static void PostShowKey(short vk)
     {
-        IntPtr hwnd = FindSlideShowWindow() ?? GetForegroundWindow();
+        IntPtr hwnd = FindSlideShowWindow() ?? IntPtr.Zero;
         if (hwnd == IntPtr.Zero) return;
         PostMessage(hwnd, WM_KEYDOWN, (nint)vk, IntPtr.Zero);
         PostMessage(hwnd, WM_KEYUP, (nint)vk, IntPtr.Zero);

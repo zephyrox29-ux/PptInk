@@ -8,7 +8,7 @@ namespace PptInk.Plugins;
 /// <summary>插件类型魔数（manifest.magic）。</summary>
 public enum PluginKind
 {
-    /// <summary>PANEL=1：声明面板位置/长宽/Alpha/面板元素（文字、滑动条、按钮、输入框）与脚本逻辑，宿主负责渲染。</summary>
+    /// <summary>PANEL=1：声明面板位置/长宽/Alpha/面板元素（文字、滑动条、按钮）与脚本逻辑，宿主负责渲染。</summary>
     Panel = 1,
     /// <summary>DRAW=2：调用宿主绘制 SDK，可调整笔迹、Alpha、抗锯齿笔锋、图案与擦除行为，以 API 暴露给脚本。</summary>
     Draw = 2,
@@ -58,7 +58,9 @@ public sealed class PanelDecl
 
 public sealed class PanelElement
 {
-    public string Type { get; set; } = "text";   // text | slider | button | input
+    // 支持的类型以 PluginManager.NormalizeManifest 白名单为准（text | slider | button）；
+    // 注释曾虚列 input 导致第三方按契约声明的包必装失败 —— 契约文档不得先于实现承诺
+    public string Type { get; set; } = "text";
     /// <summary>元素标识：脚本 updatePanelElement(id, value) 的定位键（text 元素建议填写）。</summary>
     public string? Id { get; set; }
     public string? Text { get; set; }

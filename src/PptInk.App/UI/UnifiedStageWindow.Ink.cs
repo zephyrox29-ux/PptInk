@@ -415,7 +415,9 @@ public sealed partial class UnifiedStageWindow
         {
             base.OnStylusDown(rawStylusInput);
             long now = Environment.TickCount64;
-            if (_activeId != 0 && now - _activeTick < 2000) return;
+            // 现持槽者为被屏蔽触点（_ignoreActive：命中 UI 不产生墨迹）时直接让位 ——
+            // 否则手掌搭在工具栏/翻页岛上时，真正书写手指的 Down 会被保鲜期无限期吞掉。
+            if (_activeId != 0 && now - _activeTick < 2000 && !_ignoreActive) return;
             var points = rawStylusInput.GetStylusPoints();
             if (points.Count == 0) return;
             _activeId = rawStylusInput.StylusDeviceId;
@@ -435,7 +437,7 @@ public sealed partial class UnifiedStageWindow
             base.OnStylusMove(rawStylusInput);
             if (_activeId == 0) return;
             if (rawStylusInput.StylusDeviceId != _activeId) return;
-            if (_ignoreActive) { _activeTick = Environment.TickCount64; return; }
+            if (_ignoreActive) return;   // 被屏蔽触点不产生墨迹，也不得刷新保鲜期 —— 否则 Move 持续击穿 2 秒陈旧超时，会话槽被无限期占用
             long now = Environment.TickCount64;
             long ts = InkClock.NowMs();
             foreach (var p in rawStylusInput.GetStylusPoints())

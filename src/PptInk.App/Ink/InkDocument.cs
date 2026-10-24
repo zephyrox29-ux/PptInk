@@ -8,16 +8,14 @@ using PptInk.Core;
 namespace PptInk.Ink;
 
 /// <summary>
-/// 单页墨迹（双级存储）：
-///  - 操作级：Strokes 矢量列表 + HistoryTree 指令历史（撤销/重做/回放）；
-///  - 像素级：合成位图（像素级精细擦除 + 快速合成 + 导出）。
-/// 位图懒创建：不书写的页不占 4K 位图内存（一张 3840×2160 BGRA ≈ 33MB）。
+/// 单页墨迹：Strokes 矢量列表 + HistoryTree 指令历史（撤销/重做/回放）。
+/// v1.1.0：删除了从未接线的像素级位图管线（Bitmap/EnsureBitmap/区域擦除系列）——
+/// 实际擦除自 v0.9.6 起走矢量切分，这套 API 全仓零调用，还让"双级存储"的架构描述失真。
 /// </summary>
 public sealed class InkPage
 {
     public List<StrokeData> Strokes { get; } = new();
     public HistoryTree History { get; }
-    public WriteableBitmap? Bitmap { get; private set; }
     public bool VisualDirty { get; private set; } = true;
 
     public int WidthPx { get; }
@@ -31,123 +29,6 @@ public sealed class InkPage
     }
 
     public void MarkVisualDirty() => VisualDirty = true;
-
-    /// <summary>确保像素层就绪（首次书写/像素擦除时才真正分配）。</summary>
-    public WriteableBitmap EnsureBitmap()
-    {
-        Bitmap ??= new WriteableBitmap(WidthPx, HeightPx, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null);
-        return Bitmap;
-    }
-
-    public unsafe void ClearBitmap()
-    {
-        if (Bitmap is null) return;
-        Bitmap.Lock();
-        try { MemSet((byte*)Bitmap.BackBuffer, 0, (nuint)((long)Bitmap.BackBufferStride * Bitmap.PixelHeight)); }
-        finally { Bitmap.Unlock(); }
-        VisualDirty = true;
-    }
-
-    /// <summary>原生内存填充（此前"Native memset"伪代码的正确实现）。</summary>
-    private static unsafe void MemSet(byte* dst, byte value, nuint count) => new Span<byte>(dst, (int)count).Fill(value);
-
-    public byte[] CopyRegionBitmap(Rect region)
-    {
-        var bmp = EnsureBitmap();
-        if (!TryClipRegion(bmp, region, out var clipped)) return Array.Empty<byte>();
-        int rowBytes = checked(clipped.Width * 4);
-        var buf = new byte[checked(rowBytes * clipped.Height)];
-        bmp.Lock();
-        try
-        {
-            IntPtr src = bmp.BackBuffer + (nint)((long)clipped.Y * bmp.BackBufferStride + clipped.X * 4L);
-            unsafe
-            {
-                fixed (byte* dst = buf)
-                    for (int row = 0; row < clipped.Height; row++)
-                        Buffer.MemoryCopy((byte*)src + (long)row * bmp.BackBufferStride,
-                            dst + (long)row * rowBytes, rowBytes, rowBytes);
-            }
-            return buf;
-        }
-        finally { bmp.Unlock(); }
-    }
-
-    public void EraseRegionBitmap(Rect region)
-    {
-        var bmp = EnsureBitmap();
-        if (!TryClipRegion(bmp, region, out var clipped)) return;
-        bmp.Lock();
-        try
-        {
-            unsafe
-            {
-                byte* basePtr = (byte*)bmp.BackBuffer;
-                for (int row = 0; row < clipped.Height; row++)
-                    MemSet(basePtr + (long)(clipped.Y + row) * bmp.BackBufferStride + clipped.X * 4L,
-                        0, (nuint)(clipped.Width * 4));
-            }
-            bmp.AddDirtyRect(clipped);
-        }
-        finally { bmp.Unlock(); }
-        VisualDirty = true;
-    }
-
-    public void RestoreRegionBitmap(Rect region, byte[] snapshot)
-    {
-        ArgumentNullException.ThrowIfNull(snapshot);
-        var bmp = EnsureBitmap();
-        if (!TryClipRegion(bmp, region, out var clipped)) return;
-        int rowBytes = checked(clipped.Width * 4);
-        int expectedBytes = checked(rowBytes * clipped.Height);
-        // Never read beyond a corrupt/truncated undo snapshot; leaving the current pixels intact
-        // is safer than corrupting the bitmap back buffer.
-        if (snapshot.Length != expectedBytes) return;
-        bmp.Lock();
-        try
-        {
-            unsafe
-            {
-                fixed (byte* src = snapshot)
-                {
-                    byte* dstBase = (byte*)bmp.BackBuffer + (long)clipped.Y * bmp.BackBufferStride + clipped.X * 4L;
-                    for (int row = 0; row < clipped.Height; row++)
-                        Buffer.MemoryCopy(src + (long)row * rowBytes,
-                            dstBase + (long)row * bmp.BackBufferStride, rowBytes, rowBytes);
-                }
-            }
-            bmp.AddDirtyRect(clipped);
-        }
-        finally { bmp.Unlock(); }
-        VisualDirty = true;
-    }
-
-    /// <summary>Clip arbitrary/edge-crossing rectangles to a valid non-empty bitmap region.</summary>
-    private static bool TryClipRegion(WriteableBitmap bmp, Rect region, out Int32Rect clipped)
-    {
-        clipped = Int32Rect.Empty;
-        if (region.IsEmpty || !double.IsFinite(region.X) || !double.IsFinite(region.Y) ||
-            !double.IsFinite(region.Width) || !double.IsFinite(region.Height) ||
-            region.Width <= 0 || region.Height <= 0)
-            return false;
-
-        var left = Math.Max(0, Math.Floor(region.Left));
-        var top = Math.Max(0, Math.Floor(region.Top));
-        var right = Math.Min(bmp.PixelWidth, Math.Ceiling(region.Right));
-        var bottom = Math.Min(bmp.PixelHeight, Math.Ceiling(region.Bottom));
-        if (right <= left || bottom <= top) return false;
-        clipped = new Int32Rect((int)left, (int)top, (int)(right - left), (int)(bottom - top));
-        return clipped.Width > 0 && clipped.Height > 0;
-    }
-
-    internal static class Native
-    {
-        [System.Runtime.InteropServices.DllImport("msvcrt.dll", EntryPoint = "memset")]
-        public static extern IntPtr memset(IntPtr dest, int value, nuint length);
-
-        [System.Runtime.InteropServices.DllImport("msvcrt.dll", EntryPoint = "memset")]
-        public static extern unsafe byte* memset(byte* dest, int value, nuint length);
-    }
 }
 
 /// <summary>
@@ -175,6 +56,17 @@ public sealed class InkPage
         _pages.TryGetValue(slideIndex, out var page) ? page : (_pages[slideIndex] = new InkPage(ScreenWidthPx, ScreenHeightPx));
 
     public IReadOnlyDictionary<int, InkPage> Pages => _pages;
+
+    /// <summary>当前演示文稿身份（COM ActivePresentation.FullName）。null = 尚未取得（兜底通道检测）。</summary>
+    public string? SessionIdentity { get; internal set; }
+
+    /// <summary>换课件重置（v1.1.0 修复）：本类全进程单例、页面按幻灯片序号缓存且从不清理——
+    /// 同一节课换一份课件放映，旧课件的批注会原样出现在新课件相同页码上（数据串页）。
+    /// 由引擎持锁调用：换课件时先经 TrySaveSessionSafe 自动存档旧会话，再清空全部页面与历史。</summary>
+    internal void ResetSession()
+    {
+        _pages.Clear();
+    }
 
     /// <summary>页面快照（持引擎锁构造，与墨迹线程的加页/抬笔提交互斥）。
     /// 审查修复：ExportSession 原先直接遍历 _pages 与 page.Strokes——导出（UI 线程）与

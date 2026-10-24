@@ -83,17 +83,25 @@ public sealed class StrokeData
     {
         if (Points.Count >= MaxPoints)
         {
-            // 隔点抽稀（保留偶数索引，含起点）：点数折半后继续累积。
-            var kept = new List<InkPoint>(Points.Count / 2);
-            for (int i = 0; i < Points.Count; i += 2) kept.Add(Points[i]);
-            Points.Clear();
-            Points.AddRange(kept);
-            // Compaction changes existing point indices, so incremental width state is no longer valid.
-            _cachedWidthCount = 0;
-            _hasCachedWidthKey = false;
+            CompactPoints();   // 触顶抽稀；活笔书写路径由引擎同步折半平滑流（见 InkEngine.CompactLiveStroke）
         }
         Points.Add(p);
         _cachedGeometry = null;
+    }
+
+    /// <summary>触顶隔点抽稀折半（保留偶数索引，含起点）：点数减半、形状近似不变。
+    /// 公开给引擎在折半 Points 的同一时机调 <see cref="SmoothingFilter.CompactSmoothed"/> 同步
+    /// 折半平滑流 —— 只折 Points 会让两流索引错位，抬笔补点循环重放中段且永不终止（v1.0.1）。</summary>
+    public void CompactPoints()
+    {
+        // 隔点抽稀（保留偶数索引，含起点）：点数折半后继续累积。
+        var kept = new List<InkPoint>(Points.Count / 2);
+        for (int i = 0; i < Points.Count; i += 2) kept.Add(Points[i]);
+        Points.Clear();
+        Points.AddRange(kept);
+        // Compaction changes existing point indices, so incremental width state is no longer valid.
+        _cachedWidthCount = 0;
+        _hasCachedWidthKey = false;
     }
 
     public Rect Bounds
@@ -264,6 +272,13 @@ public sealed class StrokeData
         int liftPoints = Math.Clamp(Core.AppConfig.Current.PenLiftPoints, 0, 24);
         const double liftFloor = 0.12;
         if (liftPoints <= 0) return;
+        // v1.0.1 修复收锋错位：_cachedWidthCount 是渲染层上一帧 BuildWidths 留下的点数，而抬笔
+        // 补点总晚于渲染帧 —— 直接以它为基准，收锋会错位落在倒数第 2~3 点上、真实笔尖无收锋。
+        // 缓存未建立（渲染层从未画过该笔）保持 no-op；已建立则用缓存 key 里记录的渲染同参把
+        // 宽度增量补算到最终点数（key 相同走增量路径，不触发重置/覆盖），收锋落在真实尾段。
+        if (!_hasCachedWidthKey) return;
+        if (_cachedWidthCount < Points.Count)
+            BuildWidths(_cachedWidthKey.BaseWidth, _cachedWidthKey.VelocityScale, _cachedWidthKey.MinimumWidth);
         int n = _cachedWidthCount;
         if (n < 3) return;   // 点状笔（≤2 点）无需收锋
         int k = Math.Min(liftPoints, n - 1);

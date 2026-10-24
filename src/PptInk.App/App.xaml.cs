@@ -26,6 +26,18 @@ public partial class App : Application
             _services?.Log?.Error(e.Exception, "UI 线程未捕获异常");
             e.Handled = true;
         };
+        // v1.1.0：补齐后台线程兜底 —— SetErrorMode 压掉了崩溃对话框，原先后台线程/
+        // 未观察 Task 的异常会让进程无声消失（课堂上"程序突然没了"，零日志无法排障）。
+        // 记录不能阻止进程退出（AppDomain 异常本就无法挽回），但能留下死因。
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            try { AppLog.Instance.Error(e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString() ?? "非异常对象"), "非 UI 线程未处理异常（进程将终止）"); AppLog.Instance.Stop(); } catch { }
+        };
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            try { AppLog.Instance.Error(e.Exception, "未观察 Task 异常"); } catch { }
+            e.SetObserved();   // 已记日志：不必在 GC 终结时再杀进程
+        };
     }
 
     protected override void OnStartup(StartupEventArgs e)
@@ -79,7 +91,9 @@ public partial class App : Application
         {
             // 启动阶段致命异常（COM/注册表/插件目录/Python 探测等）：记录后确定性退出，
             // 绝不半初始化留在消息泵里（原实现无保护 → 崩在事件回调、无日志、无痕迹）
-            try { _services?.Log?.Error(ex, "启动阶段致命异常"); } catch { }
+            // 审查修复：Compose 失败时 _services 恰为 null，原 `_services?.Log?` 使日志语句
+            // 整体空跳 —— 异常与已缓冲的启动日志全不落盘。AppLog 单例恒可用，直接记它。
+            try { AppLog.Instance.Error(ex, "启动阶段致命异常"); } catch { }
             Shutdown(1);
         }
     }
@@ -94,7 +108,14 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnSystemPreferenceChanged;
-        _services?.Shutdown();
+        try { _services?.Shutdown(); }
+        finally
+        {
+            // 兜底刷盘：Compose 失败（_services 为 null，Shutdown 从未执行）或清理中途抛出时，
+            // AppServices.Shutdown 末尾的 AppLog.Stop 不会跑 —— 任何退出路径都必须 Flush，
+            // 否则启动阶段的日志（含致命异常记录）随进程一起消失。Stop 幂等，重复调用无害。
+            AppLog.Instance.Stop();
+        }
         base.OnExit(e);
     }
 }

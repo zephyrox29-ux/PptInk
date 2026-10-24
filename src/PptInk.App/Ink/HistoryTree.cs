@@ -26,25 +26,27 @@ public sealed class EraseStrokesOp : IInkOp
     public EraseStrokesOp(IEnumerable<StrokeData> targets) => _targets = new List<StrokeData>(targets);
 
     /// <summary>
-    /// 预应用构造：滑过即擦要求命中笔在检测瞬间就从页面移除（不等 Commit），
-    /// 此工厂在移除时记录原索引，抬笔后经 CommitPrepared 入史，撤销可复原 z 序。
+    /// 逐批捕获（滑过即擦）：命中笔在检测瞬间就从页面移除（不等 Commit），
+    /// 每批移除时记录原索引，抬笔后经 CommitPrepared 入史，撤销可复原 z 序。
+    /// v1.1.0 修复：原先命中即移除、抬笔才构造 op —— 届时笔早已不在页面，IndexOf 恒 -1
+    /// 被跳过，_removed 恒空，Undo 返回 true 却什么都不恢复（笔迹永久丢失）。
+    /// 索引必须在移除瞬间记录，这是本指令可逆的前提。
     /// </summary>
-    internal static EraseStrokesOp PrepareApplied(InkPage page, List<StrokeData> targets)
+    internal void CaptureBatch(InkPage page, List<StrokeData> batch)
     {
-        var op = new EraseStrokesOp(targets);
-        foreach (var t in targets)
+        foreach (var t in batch)
         {
+            _targets.Add(t);
             int idx = page.Strokes.IndexOf(t);
             if (idx >= 0)
             {
-                op._removed.Add((idx, t));
+                _removed.Add((idx, t));
                 page.Strokes.RemoveAt(idx);
             }
         }
-        return op;
     }
 
-    // 审查修复：原实现带 _prepared 标志，PrepareApplied 造出的 op 在 Redo/JumpTo 重放时
+    // 审查修复：原实现带 _prepared 标志，预应用造出的 op 在 Redo/JumpTo 重放时
     // Apply 直接 return —— 擦除→撤销（笔画回来）→重做，笔画却不再消失，页面与历史树脱节。
     // 正确语义：Apply 无论何时被调用都真正执行（按引用重找、重记索引、重新移除）；
     // 首次生效走 CommitPrepared（不调 Apply），故无双重移除问题。
@@ -60,67 +62,47 @@ public sealed class EraseStrokesOp : IInkOp
 
     public void Revert(InkPage page)
     {
-        // 按原索引逆序恢复，保持 z 序不变（板书遮挡关系可复原）
-        foreach (var (idx, stroke) in _removed.OrderByDescending(r => r.Index))
-            page.Strokes.Insert(Math.Min(idx, page.Strokes.Count), stroke);
+        // 按移除的逆序恢复：每笔记录的是「移除瞬间」的位置（后移除的笔在更靠前的批里可能
+        // 记到相同索引），逆序插回恰好逐位复原，z 序（板书遮挡关系）不变。
+        // 原先按记录索引 OrderByDescending：同批相邻命中会记到相同索引，稳定排序保持移除
+        // 顺序，插回后相邻两笔层级互换（探针实证 [a,c,b,d]）。
+        for (int i = _removed.Count - 1; i >= 0; i--)
+            page.Strokes.Insert(Math.Min(_removed[i].Index, page.Strokes.Count), _removed[i].Stroke);
     }
 }
 
 /// <summary>
 /// 像素级擦除（矢量切分，v0.9.6）：原笔被切分为保留段——
 /// 撤销恢复原笔、移除保留段；只擦掉笔迹被抹过的局部，其余原样保留。
+/// v1.1.0 修复：原笔带「擦除前真实索引」、保留段带「提交瞬间位置」，撤销/重做按索引
+/// 原位插回，z 序与擦除前/后一致（原先两端都追加表尾，被局部擦除的旧笔会翻到其后书写之上）。
+/// 原笔索引由擦除服务在提交瞬间反放手势推得（跨批次的移除索引互不可比，见 EraseService）。
 /// </summary>
 public sealed class ReplaceStrokesOp : IInkOp
 {
-    private readonly List<StrokeData> _originals;
-    private readonly List<StrokeData> _replacement;
-    public ReplaceStrokesOp(List<StrokeData> originals, List<StrokeData> replacement)
+    private readonly List<(int Index, StrokeData Stroke)> _originals;
+    private readonly List<(int Pos, StrokeData Stroke)> _replacement;
+
+    public ReplaceStrokesOp(List<(int Index, StrokeData Stroke)> originals,
+                            List<(int Pos, StrokeData Stroke)> replacement)
     {
-        _originals = new List<StrokeData>(originals);
-        _replacement = new List<StrokeData>(replacement);
+        _originals = new List<(int, StrokeData)>(originals);
+        _originals.Sort((a, b) => a.Index.CompareTo(b.Index));   // 撤销按索引升序插回（前面各笔先就位，记录索引即真实落点）
+        _replacement = new List<(int, StrokeData)>(replacement);
+        _replacement.Sort((a, b) => a.Pos.CompareTo(b.Pos));
     }
     public void Apply(InkPage page)
     {
-        foreach (var o in _originals) page.Strokes.Remove(o);
-        foreach (var r in _replacement) if (!page.Strokes.Contains(r)) page.Strokes.Add(r);
+        foreach (var (_, o) in _originals) page.Strokes.Remove(o);
+        foreach (var (pos, r) in _replacement)
+            if (!page.Strokes.Contains(r)) page.Strokes.Insert(Math.Min(pos, page.Strokes.Count), r);
         page.MarkVisualDirty();
     }
     public void Revert(InkPage page)
     {
-        foreach (var r in _replacement) page.Strokes.Remove(r);
-        foreach (var o in _originals) if (!page.Strokes.Contains(o)) page.Strokes.Add(o);
-        page.MarkVisualDirty();
-    }
-}
-
-/// <summary>像素级区域擦除：仅从位图层抠除，矢量层保留（撤销=恢复位图快照区域）。</summary>
-public sealed class EraseRegionOp : IInkOp
-{
-    public required System.Windows.Rect RegionPx { get; init; }
-    private byte[]? _snapshotBefore;
-
-    /// <summary>快照字节量（历史树内存预算统计用）。</summary>
-    internal long SnapshotBytes => _snapshotBefore?.LongLength ?? 0;
-
-    /// <summary>释放位图快照（历史树预算淘汰时调用）。释放后该节点若被 Undo 到达，
-    /// Revert 退化为无操作（位图已失联）；再次 Redo 时 Apply 会重新生成快照。</summary>
-    internal long ReleaseSnapshot()
-    {
-        var n = _snapshotBefore?.LongLength ?? 0;
-        _snapshotBefore = null;
-        return n;
-    }
-
-    public void Apply(InkPage page)
-    {
-        _snapshotBefore = page.CopyRegionBitmap(RegionPx);
-        page.EraseRegionBitmap(RegionPx);
-        page.MarkVisualDirty();
-    }
-
-    public void Revert(InkPage page)
-    {
-        if (_snapshotBefore is not null) page.RestoreRegionBitmap(RegionPx, _snapshotBefore);
+        foreach (var (_, r) in _replacement) page.Strokes.Remove(r);
+        foreach (var (idx, o) in _originals)
+            if (!page.Strokes.Contains(o)) page.Strokes.Insert(Math.Min(idx, page.Strokes.Count), o);
         page.MarkVisualDirty();
     }
 }
@@ -157,7 +139,10 @@ public sealed class ClearPageOp : IInkOp
 
     public void Revert(InkPage page)
     {
-        foreach (var (idx, stroke) in _removed.OrderByDescending(r => r.Index))
+        // 记录的是清空前的原位索引（0..n-1 升序），按记录顺序逐位插回恰好复原整页 z 序。
+        // 原先 OrderByDescending 逆序插回：空列表先插最高位笔，后续 Math.Min 钳制把
+        // 其余笔反复压在其上/间，≥3 笔即乱序（探针实证 [s0,s2,s1]）。
+        foreach (var (idx, stroke) in _removed)
             page.Strokes.Insert(Math.Min(idx, page.Strokes.Count), stroke);
     }
 }
@@ -165,7 +150,8 @@ public sealed class ClearPageOp : IInkOp
 /// <summary>历史节点：分支树的节点。撤销后新绘制 = 在当前节点下开新分支。</summary>
 public sealed class HistoryNode
 {
-    public HistoryNode? Parent { get; }
+    /// <summary>父节点。internal set 仅供历史树重新定根（线性修剪）改挂保留链，外部只读。</summary>
+    public HistoryNode? Parent { get; internal set; }
     public IInkOp Op { get; }
     public List<HistoryNode> Children { get; } = new();
     public DateTime At { get; } = DateTime.Now;
@@ -195,12 +181,8 @@ public sealed class HistoryTree
     public int Depth { get; private set; }
 
     /// <summary>矢量历史节点总数上限（审查修复 #4）：长课堂大量书写/撤销下防无界增长，
-    /// 超限剪除最老的非活跃分支（当前 Head 祖先链永不在剪除范围）。</summary>
+    /// 超限先剪除最老的非活跃分支；整条历史都在当前链上（正常线性书写）时重新定根（见 TryTrim）。</summary>
     public const int MaxNodes = 2000;
-
-    /// <summary>像素快照内存预算（审查修复 #5）：EraseRegionOp 区域 RGBA 累计超预算时，
-    /// 从最老的非祖先链节点释放快照，回到 75% 水位。4K 整屏快照 ≈ 33MB，48MB ≈ 一屏余量。</summary>
-    public const long SnapshotBudgetBytes = 48L << 20;
 
     private int _commitsSinceTrim;
 
@@ -279,12 +261,15 @@ public sealed class HistoryTree
         _page.MarkVisualDirty();
     }
 
-    // ———————— 内存治理（审查修复 #4/#5） ————————
+    // ———————— 内存治理 ————————
 
     /// <summary>每 32 次提交触发一次分摊成本的全树治理：
-    ///  1) 节点总数超 MaxNodes → 从 Root 起剪除最老的不含 Head 祖先链的整枝（连同 _lastRedo 记录与快照）；
-    ///  2) 快照字节超预算 → 广度优先（老优先）释放非祖先链上 EraseRegionOp 的位图快照，回到 75% 水位。
-    /// Head 祖先链 = 撤销必需路径，任何情况下不动。</summary>
+    ///  1) 节点总数超 MaxNodes → 先从 Root 剪除最老的不含 Head 祖先链的整枝（连同 _lastRedo 记录）；
+    ///  2) 仍超限（正常线性书写：整条历史都在 Head 祖先链上，无枝可剪）→ 重新定根，
+    ///     把 Head 上方最老的超出部分斩掉，保留链挂回哨兵 Root。
+    /// v1.1.0 修复：原先只有第 1 步——线性历史下 Root.Children 唯一的孩子永远在祖先链上，
+    /// 循环一步都走不到，"2000 节点上限"在一整节课的连续书写中形同虚设（内存只增不减）。
+    /// 重定根的代价是最早的若干步从此不可撤销，与"撤销救回最近误操作"的课堂语义不冲突。</summary>
     private void TryTrim()
     {
         if (++_commitsSinceTrim < 32) return;
@@ -307,21 +292,24 @@ public sealed class HistoryTree
                 foreach (var k in _lastRedo.Keys.Where(removedSet.Contains).ToList()) _lastRedo.Remove(k);
                 foreach (var kv in _lastRedo.Where(e => removedSet.Contains(e.Value)).ToList()) _lastRedo.Remove(kv.Key);
             }
-        }
 
-        long bytes = 0;
-        ForEachNode(Root, n => bytes += (n.Op as EraseRegionOp)?.SnapshotBytes ?? 0);
-        if (bytes > SnapshotBudgetBytes)
-        {
-            var keep = AncestorChain(Head);
-            var queue = new Queue<HistoryNode>();
-            queue.Enqueue(Root);
-            while (bytes > SnapshotBudgetBytes * 3 / 4 && queue.Count > 0)
+            if (total > MaxNodes)
             {
-                var n = queue.Dequeue();
-                if (!keep.Contains(n) && n.Op is EraseRegionOp er)
-                    bytes -= er.ReleaseSnapshot();
-                foreach (var ch in n.Children) queue.Enqueue(ch);
+                // 线性链兜底：一次砍到一半，摊薄重定根的频率。chain[0]=Head、末位=Root 直系孩子。
+                var chain = new List<HistoryNode>();
+                for (var n = Head; n != Root; n = n.Parent!) chain.Add(n);
+                int keepCount = Math.Min(chain.Count, MaxNodes / 2);
+                if (keepCount > 0 && keepCount < chain.Count)
+                {
+                    var dropped = new HashSet<HistoryNode>(chain.Skip(keepCount));
+                    foreach (var k in _lastRedo.Keys.Where(dropped.Contains).ToList()) _lastRedo.Remove(k);
+                    foreach (var kv in _lastRedo.Where(e => dropped.Contains(e.Value)).ToList()) _lastRedo.Remove(kv.Key);
+                    var oldestKept = chain[keepCount];
+                    oldestKept.Parent = Root;
+                    Root.Children.Clear();
+                    Root.Children.Add(oldestKept);
+                    Depth -= chain.Count - keepCount;
+                }
             }
         }
     }
@@ -337,12 +325,6 @@ public sealed class HistoryTree
     {
         into.Add(n);
         foreach (var ch in n.Children) CollectSubtree(ch, into);
-    }
-
-    private static void ForEachNode(HistoryNode n, Action<HistoryNode> act)
-    {
-        act(n);
-        foreach (var ch in n.Children) ForEachNode(ch, act);
     }
 
     private static HashSet<HistoryNode> AncestorChain(HistoryNode head)

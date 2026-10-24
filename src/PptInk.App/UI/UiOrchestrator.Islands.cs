@@ -175,27 +175,34 @@ public sealed partial class UiOrchestrator
         _polling = true;
         try
         {
-            int pos = 0, total = 0;
-            try
+            // 审查修复：COM 读数加 800ms 超时护栏 + 在飞任务复用（与看门狗 COM 探测同策）
+            // —— PPT 主 STA 完全假死时同步 COM 读永久挂起，原实现 finally 永不执行、
+            // _polling 卡死 true，此后页码轮询每拍在防重入处 return，整体停摆。
+            // 复用而非每次新建：挂起的调用无法取消，反复新建会按 500ms 周期无界堆积挂死
+            // 线程；PPT 进程死亡时挂起调用以 RPC 失败落地、任务自然完成，轮询自愈。
+            var probe = _pageProbeInFlight ??= Task.Run(() =>
             {
-                await Task.Run(() =>
-                {
-                    // 放映屏感知：趁读页码的同一后台段刷新目标屏（EnumWindows+Monitor 查询廉价；
-                    // 幂等：目标屏未变时无副作用，变化时 ScreenChanged → RelocateAllToScreen）
-                    ShowScreen.UpdateFromShowWindow(_svc.PptController.TryGetShowHwnd());
-                    if (_svc.PptController.TryGetSlidePosition(out var p)) pos = p;
-                    if (_svc.PptController.TryGetTotalSlides(out var t)) total = t;
-                });
-            }
+                // 放映屏感知：趁读页码的同一后台段刷新目标屏（EnumWindows+Monitor 查询廉价；
+                // 幂等：目标屏未变时无副作用，变化时 ScreenChanged → RelocateAllToScreen）
+                ShowScreen.UpdateFromShowWindow(_svc.PptController.TryGetShowHwnd());
+                int pos = _svc.PptController.TryGetSlidePosition(out var p) ? p : 0;
+                int total = _svc.PptController.TryGetTotalSlides(out var t) ? t : 0;
+                return (Pos: pos, Total: total);
+            });
+            if (await Task.WhenAny(probe, Task.Delay(800)) != probe)
+                return;                        // 超时：本拍放弃（徽标保留旧值），在飞任务留待下拍
+            _pageProbeInFlight = null;
+            int page, pages;
+            try { (page, pages) = await probe; }
             catch { return; }
-            if (pos <= 0) return;              // COM 不可用：不动徽标（保留事件/推算通道的值）
-            if (pos == _lastBadgePage && total == _lastBadgeTotal) return;
-            _lastBadgePage = pos; _lastBadgeTotal = total;
-            await _app.Dispatcher.InvokeAsync(() => UpdatePageIslands(pos, total));
+            if (page <= 0) return;             // COM 不可用：不动徽标（保留事件/推算通道的值）
+            if (page == _lastBadgePage && pages == _lastBadgeTotal) return;
+            _lastBadgePage = page; _lastBadgeTotal = pages;
+            await _app.Dispatcher.InvokeAsync(() => UpdatePageIslands(page, pages));
             // 审查修复：轮询兜底原先只刷徽标、不切墨迹页 —— COM 事件订阅失效但查询可用的环境下，
             // 老师翻页后页码显示变了、墨迹却留在旧页。权威读数送状态机统一驱动切页/徽标/收浮岛
             // （幂等：与事件通道同值时 ApplySlideIndex 静默返回，不重复触发）。
-            _svc.StateMachine.OnSlideChanged(new Detection.SlideChangedEvent(pos, total, "COM:poll"));
+            _svc.StateMachine.OnSlideChanged(new Detection.SlideChangedEvent(page, pages, "COM:poll"));
         }
         finally { _polling = false; }
     }

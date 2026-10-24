@@ -31,9 +31,19 @@ public sealed class EraseService
     private DeviceProfile _profile;
     private readonly List<StrokeData> _ghosts = new();
     private readonly List<DissolveParticle> _particles = new(512);
-    private readonly List<StrokeData> _pendingRemoved = new();
-    private readonly List<StrokeData> _pixelOriginals = new();   // v0.9.6 像素擦除会话：被切分的原笔
-    private readonly List<StrokeData> _pixelKeep = new();        // \u4fdd\u7559\u6bb5\uff08\u62ac\u7b14\u6253\u5305 1 \u6761\u5386\u53f2\uff09
+    private EraseStrokesOp? _pendingOp;                          // 抹除会话（整笔模式）：移除瞬间逐批捕获，抬笔统一提交
+    private readonly List<StrokeData> _pixelKeep = new();        // 保留段全集（抬笔打包 1 条历史）
+    // v0.9.6 像素擦除会话：每次切分调用的命中记录（原笔移除瞬间索引 + 保留段插入瞬间位置）。
+    // 跨批次的移除索引互不可比（批间列表已被前批改写），提交时须整批反放才能推回擦除前真实原位。
+    private readonly List<List<PixelHit>> _pixelBatches = new();
+
+    /// <summary>一次切分调用中的一支命中笔及其保留段记录（反向重放的最小单元）。</summary>
+    private sealed class PixelHit
+    {
+        public int R;                                            // 原笔移除瞬间索引
+        public StrokeData S = null!;                             // 原笔
+        public readonly List<(int Pos, StrokeData Stroke)> Keeps = new();   // 保留段插入瞬间位置（升序）
+    }
     private readonly DispatcherTimer? _anim;
     private DateTime _lastFrame;
 
@@ -81,7 +91,8 @@ public sealed class EraseService
                 foreach (var s in page.Strokes)
                     if (HitByPathFast(s, tail, radiusPx)) hit.Add(s);
                 if (hit.Count == 0) return;
-                RemoveAndGhost(page, hit);
+                _pendingOp ??= new EraseStrokesOp(new List<StrokeData>());   // 会话首批建 op，后续批并入（一次撤销整批）
+                RemoveAndGhost(page, hit, _pendingOp);
             }
             return;
         }
@@ -107,17 +118,28 @@ public sealed class EraseService
         _pixelPathCursor = path.Count;   // 无论是否命中都推进游标（未命中区已是空白）
         if (hits.Count == 0) return;
 
+        var batch = new List<PixelHit>();
         foreach (var s in hits)
         {
             // 切分仍用<b>当前新增段</b>：已擦区域对应的笔点早已被移除/切走，不会重复出现
             var keep = SplitStroke(s, delta, radiusPx);
-            page.Strokes.Remove(s);
-            foreach (var k in keep) page.Strokes.Add(k);
+            // v1.1.0 修复：先记录原索引，保留段原位插回（原先移除后追加表尾，被局部擦除的
+            // 旧笔会翻到其后书写的笔之上，遮挡关系与擦除前不一致）
+            int idx = page.Strokes.IndexOf(s);
+            page.Strokes.RemoveAt(idx);
+            var hit = new PixelHit { R = idx, S = s };
+            for (int k = 0; k < keep.Count; k++)
+            {
+                int pos = Math.Min(idx + k, page.Strokes.Count);
+                page.Strokes.Insert(pos, keep[k]);
+                hit.Keeps.Add((pos, keep[k]));
+            }
             s.DissolveProgress = 0; s.DissolveDelay = 0;
             _ghosts.Add(s);
-            _pixelOriginals.Add(s);
             _pixelKeep.AddRange(keep);
+            batch.Add(hit);
         }
+        _pixelBatches.Add(batch);
         page.MarkVisualDirty();
         StartAnim();
         _lastFrame = DateTime.UtcNow;
@@ -197,22 +219,55 @@ public sealed class EraseService
 
     /// <summary>抬笔：把本次抹除累计命中的整批笔打包成一条撤销指令。
     /// v0.9.6：像素模式下把「原笔 → 保留段」打包为一条 ReplaceStrokesOp（一次撤销整批复原）。
+    /// v1.1.0：提交瞬间反放整个手势推回擦除前列表，读出原笔的擦除前真实索引、
+    /// 保留段的擦除后最终位置，撤销/重做据此原位插回复原 z 序。
     /// v0.9.7：同时重置像素路径游标（下次擦除从路径头开始扫描）。</summary>
     public void FlushErase(InkPage page)
     {
         lock (RenderGate)
         {
             _pixelPathCursor = 0;   // v0.9.7：会话结束重置游标，下一次擦除从路径头开始
-            if (_pixelOriginals.Count > 0)
+            if (_pixelBatches.Count > 0)
             {
-                page.History.CommitPrepared(new ReplaceStrokesOp(_pixelOriginals, _pixelKeep));
-                _pixelOriginals.Clear();
+                // 保留段最终位置（此刻列表即擦除完成态，重做据此原位插回）。
+                // 已被后续批再切分的段不在列表中（它与其碎片都在命中记录里），跳过防 -1 落点
+                var keepPos = new List<(int Pos, StrokeData Stroke)>(_pixelKeep.Count);
+                foreach (var k in _pixelKeep)
+                {
+                    int pos = page.Strokes.IndexOf(k);
+                    if (pos >= 0) keepPos.Add((pos, k));
+                }
+                // 反向重放（逐批逐笔精确逆操作：先撤该笔保留段、再原位插回原笔）推回擦除前列表。
+                // 手势中途生成、又被后续批切走的段此时不在列表中（IndexOf=-1），自然不计入原笔。
+                for (int b = _pixelBatches.Count - 1; b >= 0; b--)
+                    for (int i = _pixelBatches[b].Count - 1; i >= 0; i--)
+                    {
+                        var hit = _pixelBatches[b][i];
+                        foreach (var (_, k) in hit.Keeps) page.Strokes.Remove(k);
+                        page.Strokes.Insert(Math.Min(hit.R, page.Strokes.Count), hit.S);
+                    }
+                var originals = new List<(int Index, StrokeData Stroke)>();
+                foreach (var batch in _pixelBatches)
+                    foreach (var hit in batch)
+                    {
+                        int idx = page.Strokes.IndexOf(hit.S);
+                        if (idx >= 0) originals.Add((idx, hit.S));
+                    }
+                // 正向重放恢复擦除完成态（op 语义是「已生效」，页面不能停在擦除前）
+                foreach (var batch in _pixelBatches)
+                    foreach (var hit in batch)
+                    {
+                        page.Strokes.Remove(hit.S);
+                        foreach (var (pos, k) in hit.Keeps)
+                            page.Strokes.Insert(Math.Min(pos, page.Strokes.Count), k);
+                    }
+                page.History.CommitPrepared(new ReplaceStrokesOp(originals, keepPos));
+                _pixelBatches.Clear();
                 _pixelKeep.Clear();
             }
-            if (_pendingRemoved.Count == 0) return;
-            var op = EraseStrokesOp.PrepareApplied(page, _pendingRemoved);
-            page.History.CommitPrepared(op);
-            _pendingRemoved.Clear();
+            if (_pendingOp is null) return;
+            page.History.CommitPrepared(_pendingOp);   // v1.1.0：提交移除瞬间捕获的 op（原先抬笔才构造，索引已失，撤销成空操作）
+            _pendingOp = null;
         }
     }
 
@@ -232,13 +287,13 @@ public sealed class EraseService
                 if (s.HitByLassoPolygon(lasso)) hit.Add(s);
             if (hit.Count == 0) return;
 
-            RemoveAndGhost(page, hit);
-            // 审查修复：原先误用 _pendingRemoved（抹除模式的跨笔累计）打包 —— 若抹除被翻页中断
-            // （残留未 Flush），圈除会把旧批混进本次提交（旧笔 IndexOf=-1 被跳过，其历史恢复永久丢失）。
-            // 圈除是一次性手势：只提交本次命中的 hit。
-            var op = EraseStrokesOp.PrepareApplied(page, hit);
+            // 圈除是一次性手势：独立 op 立即提交，不经抹除会话的 _pendingOp（互不串批）。
+            // v1.1.0 修复：RemoveAndGhost 已在移除瞬间把本次 hit 捕获进 op（记录原索引），
+            // 原先其后再 PrepareApplied —— 笔已移除，IndexOf 恒 -1，撤销返回 true 却恢复不了；
+            // 旧注释把 IndexOf=-1 归因为「翻页中断的旧批」，实际当前批同样全中。
+            var op = new EraseStrokesOp(new List<StrokeData>());
+            RemoveAndGhost(page, hit, op);
             page.History.CommitPrepared(op);
-            _pendingRemoved.Clear();   // RemoveAndGhost 已把 hit 累计进来，清掉防串入下批
         }
     }
 
@@ -335,14 +390,15 @@ public sealed class EraseService
 
     // ———————————— 消散动画 ————————————
 
-    private void RemoveAndGhost(InkPage page, List<StrokeData> removed)
+    private void RemoveAndGhost(InkPage page, List<StrokeData> removed, EraseStrokesOp op)
     {
         lock (RenderGate)   // 可重入：public 入口已持 RenderGate（Monitor 同线程重入不阻塞）
         {
+            // v1.1.0 修复：op 必须在移除瞬间捕获（记录原索引 + 移除一步完成）——
+            // 撤销恢复与 z 序复原都依赖这份「移除瞬间」的索引，事后补记恒为 -1。
+            op.CaptureBatch(page, removed);
             foreach (var s in removed)
             {
-                page.Strokes.Remove(s);
-                _pendingRemoved.Add(s);
                 s.DissolveProgress = 0;
                 s.DissolveDelay = 0;
                 _ghosts.Add(s);
@@ -448,6 +504,4 @@ public sealed class EraseService
             GhostSettled?.Invoke(this, EventArgs.Empty);
         }
     }
-
-    internal void OnGhostFrameFromParticles(StrokeData ghost) { /* 预留：单笔粒子的定向接口 */ }
 }

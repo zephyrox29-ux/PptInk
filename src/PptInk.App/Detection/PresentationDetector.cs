@@ -115,6 +115,21 @@ public sealed class PresentationDetector : IDisposable
         PresentationEnded?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>强制复位放映去重状态（不触发 PresentationEnded —— 调用方自行完成 UI 收回）。
+    /// 供看门狗等绕过本检测器直接回收的路径调用。审查修复：开场 300ms 内的 End 被吞噬后
+    /// _showActive 滞留 true，而看门狗直接调 StateMachine.OnPresentationEnd 不经本类，
+    /// 此后重启放映的 Start 被 OnWinStarted/OnComStarted 的去重静默丢弃（COM 源跨次放映
+    /// 同名，兜底通道无条件沉默），整场放映不再唤起批注 UI。误复位无害：放映实际仍在时，
+    /// 下一拍 Started/翻页/补报事件会重新建立状态。</summary>
+    public void ForceReset()
+    {
+        lock (_gate)
+        {
+            _showActive = false;
+            _activeSource = "";
+        }
+    }
+
     /// <summary>兜底模式下的手动翻页推算入口（翻页栏按钮 → PageNumberTracker → 此处）。</summary>
     public void NotifyManualAdvance(bool forward) => _winEvent.NotifyManualAdvance(forward);
 

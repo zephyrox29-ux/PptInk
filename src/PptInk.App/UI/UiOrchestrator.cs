@@ -54,6 +54,10 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     private readonly DispatcherTimer _watchdog = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private int _wdStuckCount;      // 退映「双口径判死」连续确认拍数（3 拍才动手，防 COM 瞬断误杀）
     private bool _wdExitChecking;   // 退映复核防重入（fire-and-forget 异步任务并发保护）
+    // COM 探测在飞任务（页码轮询同款，见 ProbeComAliveAsync）：仅在 UI 线程读写
+    //（看门狗/页码轮询/翻页即时读全部经 Dispatcher 或 DispatcherTimer）
+    private Task<bool>? _comProbeInFlight;
+    private Task<(int Pos, int Total)>? _pageProbeInFlight;
 
     public Toolbar? Toolbar => _toolbar;
     public UnifiedStageWindow? Overlay => _overlay;
@@ -70,6 +74,9 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
 
         // 万全看门狗（S1/手动唤起启动，S0 停止）：不信任任何一次性设置，只信任持续校验
         _watchdog.Tick += (_, _) => WatchdogTick();
+
+        // 最近色落盘防抖到期冲刷（见 ScheduleRecentColorsSave）
+        _recentColorSaveTimer.Tick += (_, _) => FlushRecentColorsSave();
 
         svc.StateMachine.SlideIndexChanged += (_, idx) =>
             _app.Dispatcher.Invoke(() =>
@@ -112,12 +119,11 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         });
 
         // 主题热切换 → 代码层冻结 Brush 的高亮重建
-        //（XAML 窗口 DynamicResource 自动跟随；浮岛基类 IslandWindow 自行监听，此处只补 Toolbar/Settings）
+        //（XAML 窗口 DynamicResource 自动跟随；浮岛基类 IslandWindow 自行监听，此处只补 Toolbar）
         ThemeManager.ThemeChanged += () =>
             _app.Dispatcher.BeginInvoke(() =>
             {
                 _toolbar?.OnThemeApplied();
-                _settings?.OnThemeApplied();
             });
 
         // 放映屏感知（v0.1.3 试用反馈核心修复）：目标屏变化 → 全部全屏 UI 重对位。
@@ -157,11 +163,37 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     private void PushRecentColor(string hex)
     {
         var list = _svc.Config.RecentColors;
+        // 去重短路：同色连写（课堂最常见情形）列表内容不变，跳过落盘排程
+        if (list.Count > 0 && list[0].Equals(hex, StringComparison.OrdinalIgnoreCase)) return;
         list.RemoveAll(c => c.Equals(hex, StringComparison.OrdinalIgnoreCase));
         list.Insert(0, hex);
         if (list.Count > 5) list.RemoveRange(5, list.Count - 5);
-        _svc.Config.Save();
+        ScheduleRecentColorsSave();
         _toolbar?.RefreshPaletteRecent();   // v0.5.0：最近色沉淀到内嵌调色面板（面板未构建时内部静默忽略）
+    }
+
+    // —— 最近色落盘防抖（审查修复）：原实现每笔板书经 PushRecentColor 在 UI 线程同步
+    //    全量配置序列化 + flushToDisk，连续板书课堂上每笔一次，机械盘/实时杀软环境
+    //    可感知卡顿。现内存态即时生效，落盘延迟合并写（Save 的 flushToDisk 崩溃安全保留）；
+    //    进程退出经 CloseAll 兜底冲刷，挂起未落盘的最近色不丢。——
+    private readonly DispatcherTimer _recentColorSaveTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private bool _recentColorsDirty;
+
+    /// <summary>排程（合并）一次最近色配置落盘，UI 线程调用。</summary>
+    private void ScheduleRecentColorsSave()
+    {
+        _recentColorsDirty = true;
+        _recentColorSaveTimer.Stop();
+        _recentColorSaveTimer.Start();
+    }
+
+    /// <summary>冲刷挂起的最近色落盘（防抖到期 / 退出收场时调用，UI 线程）。</summary>
+    private void FlushRecentColorsSave()
+    {
+        _recentColorSaveTimer.Stop();
+        if (!_recentColorsDirty) return;
+        _recentColorsDirty = false;
+        _svc.Config.Save();
     }
 
     /// <summary>预热：预创建全部窗口（Hide 状态）。S0 阶段一次完成，唤起 &lt;300ms。</summary>
@@ -323,16 +355,29 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         _wdExitChecking = true;
         try
         {
+            // 审查修复（探测顺序）：窗口枚举 + 响应性探测先行（纯 Win32，SendMessageTimeout
+            // 自带 800ms 上限，永不挂死），窗口在且响应正常才碰 COM。原实现首条语句即
+            // HasActiveShow() —— PPT 主 STA 完全假死（不泵消息）时跨套间同步 COM 调用永久
+            // 挂起（MTA 线程池调用方无忙碌重试对话框、无默认超时），b 口径窗口探测永远执行
+            // 不到：_wdExitChecking 卡死 true、此后每拍在门禁处直接 return，看门狗在它为之
+            // 设计的假死场景下自锁。
             bool comAlive = false, winVisible = false, winResponsive = false;
             try
             {
-                await Task.Run(() =>
+                var h = await Task.Run(() => Ppt.PptController.FindSlideShowWindow());
+                winVisible = h is not null;
+                winResponsive = winVisible && Ppt.PptController.IsWindowResponsive(h!.Value);
+                if (winVisible && !winResponsive)
                 {
-                    comAlive = _svc.PptController.HasActiveShow();
-                    var h = Ppt.PptController.FindSlideShowWindow();
-                    winVisible = h is not null;
-                    winResponsive = winVisible && Ppt.PptController.IsWindowResponsive(h!.Value);
-                });
+                    // 窗口挂起即 b 口径目标形态：此拍不碰 COM（同上必挂），
+                    // 挂起本身已足以判死，COM 口径按 false 参与即可。
+                }
+                else
+                {
+                    bool? alive = await ProbeComAliveAsync();
+                    if (alive is null) return;   // COM 探测超时：状态不明，本拍不计（保守防误杀）
+                    comAlive = alive.Value;
+                }
             }
             catch { return; }
 
@@ -346,6 +391,10 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
                 if (++_wdStuckCount < 3) return;
                 _wdStuckCount = 0;
                 _svc.Log.Warn($"看门狗：放映已判死回收（COM={comAlive}，窗口可见={winVisible}，窗口响应={winResponsive}）");
+                // 审查修复：同步复位检测器去重状态 —— 看门狗回收绕过检测器（其 End 事件链
+                // 失效正是走到这里的前提），不复位则开场 300ms 内被吞的 End 使 _showActive
+                // 滞留 true，此后重启放映的 Start 被双通道去重丢弃，整场放映无批注 UI
+                _svc.Detector.ForceReset();
                 _svc.StateMachine.OnPresentationEnd();
                 Toast.Show(winVisible && !winResponsive
                     ? "检测到放映程序无响应，批注工具已收回（可用任务管理器结束 PowerPoint）"
@@ -353,6 +402,19 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
             });
         }
         finally { _wdExitChecking = false; }
+    }
+
+    /// <summary>COM 存活探测（800ms 超时护栏 + 在飞任务复用）。返回 null = 本拍超时放弃。
+    /// 复用原因：挂起的 COM 调用无法取消，若每次超时后新建探测，会按看门狗周期无界堆积
+    /// 挂死线程；复用同一在飞任务则至多占用一个线程，且 PPT 进程死亡时该调用以 RPC 失败
+    /// 落地、任务自然完成，下一拍取到真实值。仅 UI 线程调用（看门狗 tick）。</summary>
+    private async Task<bool?> ProbeComAliveAsync()
+    {
+        var probe = _comProbeInFlight ??= Task.Run(() => _svc.PptController.HasActiveShow());
+        if (await Task.WhenAny(probe, Task.Delay(800)) != probe) return null;   // 超时：保留在飞任务
+        _comProbeInFlight = null;
+        try { return await probe; }
+        catch { return false; }
     }
 
     /// <summary>工具栏缩放变更（设置中心调用）。</summary>
@@ -377,7 +439,12 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
             switch (phase)
             {
                 case AppPhase.S1Active:
+                    _svc.Tray.RestoreIfHiddenByMenu();   // 兑现托盘菜单「下次放映自动恢复」承诺（图标因菜单隐藏时恢复）
                     _assistSessionOff = false;   // 新放映会话：气泡「本次放映不再提示」重新生效
+                    // 换课件检测（v1.1.0）：身份变化时存档并清空旧课件批注，防串页。
+                    // 身份读取失败（兜底通道/WPS）时引擎不动，保持既有行为。
+                    if (_svc.PptController.TryGetPresentationIdentity(out var deckId))
+                        _svc.InkEngine.BeginPresentationSession(deckId);
                     ShowChrome();
                     _overlayWanted = true;        // v0.8.2：切档重建后据此恢复激活态
                     _overlay?.ActivateStage();
@@ -584,6 +651,7 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     {
         _app.Dispatcher.Invoke(() =>
         {
+            FlushRecentColorsSave();   // 兜底冲刷挂起的最近色落盘（此后防抖定时器不再有机会触发）
             _toolbar?.Close();
             _eraseIsland?.Close();
             _overlay?.Close();

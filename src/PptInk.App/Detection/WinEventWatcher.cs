@@ -113,7 +113,9 @@ public sealed class WinEventWatcher : IPresentationChannel
     // 判活 → End 永不触发 → 状态机卡 S1 → 墨迹层/引导遮罩/工具栏全套滞留。
     private bool IsSlideShowStillAlive() => _currentShowHwnd != IntPtr.Zero && IsWindow(_currentShowHwnd) && IsWindowVisible(_currentShowHwnd);
 
-    private static bool IsForeignOverlay(string cls) =>
+    /// <summary>类名是否命中外来覆盖前缀（希沃白板/EasiNote）。公开给状态机的恢复探测
+    /// 复核前台 —— 两处判定必须同源（同一前缀表），各自维护会漂移。</summary>
+    public static bool IsForeignOverlay(string cls) =>
         ForeignOverlayClassPrefixes.Any(p => cls.StartsWith(p, StringComparison.OrdinalIgnoreCase));
 
     private static string GetClassName(IntPtr hwnd)

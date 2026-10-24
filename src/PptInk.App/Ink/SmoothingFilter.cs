@@ -106,6 +106,19 @@ public sealed class SmoothingFilter
     /// 锁外跨线程枚举会与追加中的写入竞态（List 版本冲突抛异常）。</summary>
     public IReadOnlyList<InkPoint> EmitSmoothed() => _smoothed;
 
+    /// <summary>隔点抽稀折半平滑点流（保留偶数索引）。与 <see cref="StrokeData.CompactPoints"/> 配套：
+    /// 引擎在活笔点数触顶的同一时机把两侧一起抽稀 —— 本列表只增不减的话，Points 与平滑流索引
+    /// 错位会让引擎的逐索引补点循环重放笔迹中段且永不终止（v1.0.1 修复）。
+    /// 滤波状态（OneEuro）不受影响：仅重排已产出的平滑点，后续 Feed 照常续流。</summary>
+    public void CompactSmoothed()
+    {
+        if (_smoothed.Count < 2) return;
+        var kept = new List<InkPoint>(_smoothed.Count / 2 + 1);
+        for (int i = 0; i < _smoothed.Count; i += 2) kept.Add(_smoothed[i]);
+        _smoothed.Clear();
+        _smoothed.AddRange(kept);
+    }
+
     /// <summary>
     /// 二次 Bezier 拟合：相邻平滑点取中点为段端点、原点为控制点，
     /// 一次遍历 O(n) 生成 C1 连续曲线（经典中点法）。

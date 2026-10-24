@@ -94,7 +94,15 @@ public sealed class PresenterForwarder : IDisposable
         if (fgPid != GetCurrentProcessId())
             return CallNextHookEx(_hook, code, wParam, lParam);
 
-        // 焦点在本进程 → 吞掉本键，异步转发翻页（回调内不做 COM/耗时操作，300ms 硬限制）
+        // 焦点在本进程的可编辑控件（设置中心/插件面板的 TextBox 等）→ 放行。
+        // 审查修复：←/→ 是文本插入点移动键、PageUp/PageDown 是表单翻页键，与头部设计
+        // 注释对空格/回车/Esc 的表单语义豁免同理 —— 原实现只判"前台属于本进程"就吞键，
+        // 教师在设置窗输入框里按方向键变成"光标不动、身后 PPT 在翻页"。
+        // LL 钩子回调在装钩线程（UI 线程泵消息时）同步执行，WPF 焦点查询线程安全。
+        if (System.Windows.Input.Keyboard.FocusedElement is System.Windows.Controls.TextBox { IsReadOnly: false })
+            return CallNextHookEx(_hook, code, wParam, lParam);
+
+        // 焦点在本进程非编辑控件 → 吞掉本键，异步转发翻页（回调内不做 COM/耗时操作，300ms 硬限制）
         bool fwd = forward.Value;
         _dispatcher.BeginInvoke(() => _advance(fwd), DispatcherPriority.Input);
         return (IntPtr)1;

@@ -16,6 +16,7 @@ public sealed class TrayIconController : IDisposable
     private readonly NotifyIcon _notifyIcon;
     private readonly AppStateMachine _state;
     private readonly UiOrchestrator _ui;
+    private bool _hiddenByMenu;   // 托盘菜单「隐藏」所致（区别于启动配置 HideTrayIcon 的常驻隐藏）
 
     public TrayIconController(Application app, AppStateMachine state, UiOrchestrator ui)
     {
@@ -103,9 +104,26 @@ public sealed class TrayIconController : IDisposable
         if (!hideByDefault) Show();
     }
 
-    public void Show() => _notifyIcon.Visible = true;
+    public void Show()
+    {
+        _hiddenByMenu = false;
+        _notifyIcon.Visible = true;
+    }
 
-    public void Hide() => _notifyIcon.Visible = false;
+    public void Hide()
+    {
+        _hiddenByMenu = true;
+        _notifyIcon.Visible = false;
+    }
+
+    /// <summary>兑现托盘菜单项「隐藏托盘图标（下次放映自动恢复）」的承诺：放映唤起（S1）时
+    /// 恢复被菜单隐藏的图标。托盘是设置/导出/退出的唯一常规入口（OnExplicitShutdown），
+    /// 进程内永不恢复会令教师对运行中的程序失去全部控制面。启动配置 HideTrayIcon 的隐藏
+    /// 不经此恢复（设置页语义：重启才生效）。</summary>
+    public void RestoreIfHiddenByMenu()
+    {
+        if (_hiddenByMenu) Show();
+    }
 
     private static Icon LoadIcon()
     {

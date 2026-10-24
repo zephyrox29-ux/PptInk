@@ -167,14 +167,20 @@ public sealed class DeviceProfileStore
         Fallback = _profiles["generic"];
 
         // 用户扩展：C:\ProgramData\PptInk\profiles\*.json
-        try
+        var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PptInk", "profiles");
+        if (!Directory.Exists(dir)) return;
+        foreach (var f in Directory.EnumerateFiles(dir, "*.json"))
         {
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PptInk", "profiles");
-            if (Directory.Exists(dir))
-                foreach (var f in Directory.EnumerateFiles(dir, "*.json"))
-                    Add(JsonSerializer.Deserialize<DeviceProfile>(File.ReadAllText(f))!);
+            // 逐文件容错：try/catch 收进循环体 —— 单个坏档案（非法 JSON / 缺 required Id）
+            // 只跳过自身，不得终止整个循环连坐其余扩展档案；Deserialize 对 JSON null
+            // 文件返回 null，Add 前判空（否则 _profiles[p.Id] 抛 NRE 同样打断循环）
+            try
+            {
+                if (JsonSerializer.Deserialize<DeviceProfile>(File.ReadAllText(f)) is { } p)
+                    Add(p);
+            }
+            catch { /* 单个扩展档案损坏不阻塞启动 */ }
         }
-        catch { /* 扩展档案损坏不阻塞启动 */ }
     }
 
     private void Add(DeviceProfile p) => _profiles[p.Id] = p;

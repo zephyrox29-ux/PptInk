@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using System.Text;
+
 namespace PptInk.Core;
 
 /// <summary>应用运行阶段。S2 为"避让隐藏"：希沃白板/EasiNote 前台时主动让位。</summary>
@@ -94,7 +97,10 @@ public sealed class AppStateMachine
 
     /// <summary>
     /// 检测到外来覆盖（希沃白板、EasiNote、全屏视频前台）→ S2 隐藏。
-    /// 迟滞：距上次可见 &lt; hysteresisMs 的抖动直接忽略，防闪隐。
+    /// 迟滞：距上次可见 &lt; hysteresisMs 的抖动不直接丢弃而是推迟判定（审查修复：
+    /// 原实现整体 return —— 进入 S1 后迟滞窗口内的首次 ForeignOverlay 被整抛且
+    /// 事件纯驱动不补发，覆盖常驻时永不隐藏）；推迟到期复查前台，覆盖已消失则不隐藏
+    /// （防闪隐语义保留：瞬时抖动仍不会触发隐藏）。
     /// </summary>
     public void OnForeignOverlay()
     {
@@ -102,24 +108,80 @@ public sealed class AppStateMachine
         lock (_gate)
         {
             if (Phase != AppPhase.S1Active || UiLocked) return;
-            if ((DateTime.UtcNow - _lastVisibleAt).TotalMilliseconds < _hysteresisMs) return;
-
-            phase = TransitionTo(AppPhase.S2Yield);
-            // 外来覆盖消失后自动回到 S1（若放映仍在）：单次定时探测
-            _yieldRecoverTimer?.Dispose();
-            _yieldRecoverTimer = new Timer(_ =>
+            if ((DateTime.UtcNow - _lastVisibleAt).TotalMilliseconds < _hysteresisMs)
             {
-                AppPhase? recovered = null;
-                lock (_gate)
-                {
-                    if (Phase == AppPhase.S2Yield && _session != null && !UiLocked)
-                        recovered = TransitionTo(AppPhase.S1Active);
-                }
-                if (recovered is { } rp) PhaseChanged?.Invoke(this, rp);
-            }, null, _hysteresisMs, Timeout.Infinite);
+                ScheduleYieldProbe();   // 推迟判定：迟滞期满复核前台，仍命中才进 S2
+                return;
+            }
+
+            phase = EnterYield();
         }
         if (phase is { } p) PhaseChanged?.Invoke(this, p);
     }
+
+    /// <summary>锁内：进入 S2 并排一次恢复探测（单次定时）。</summary>
+    private AppPhase? EnterYield()
+    {
+        var phase = TransitionTo(AppPhase.S2Yield);
+        ScheduleYieldProbe();
+        return phase;
+    }
+
+    /// <summary>锁内：重置单次探测定时器。到期动作随当前相位而定：
+    ///  - S2（恢复探测）：复核前台，外来覆盖<strong>仍在前台则顺延再探</strong>，已消失才回 S1。
+    ///    审查修复：原实现固定 500ms 后无条件回 S1 —— 希沃白板仍在前台时，置顶全屏墨迹层
+    ///    （UnifiedStageWindow Topmost + 书写拦截底刷）弹回白板上方，教师后续书写被本进程
+    ///    截胡；且希沃自家窗口间每次切换都会再触发一轮 S2→500ms→S1 闪隐循环。
+    ///  - S1（迟滞推迟判定）：复核前台，覆盖仍在前台才进 S2（见 OnForeignOverlay）。
+    /// </summary>
+    private void ScheduleYieldProbe()
+    {
+        _yieldRecoverTimer?.Dispose();
+        Timer? probe = null;
+        probe = new Timer(_ =>
+        {
+            AppPhase? phase = null;
+            lock (_gate)
+            {
+                if (Phase == AppPhase.S2Yield && _session != null && !UiLocked)
+                {
+                    if (ForeignOverlayStillInForeground())
+                    {
+                        // 覆盖仍在前台：顺延一个迟滞周期后再探，绝不带着覆盖弹回 S1。
+                        // 仅当本定时器仍是被排程的那个才顺延（期间可能已被替换/重排）；
+                        // probe 在回调首次点火前必已完成赋值，判空只为安抚可空分析。
+                        if (ReferenceEquals(_yieldRecoverTimer, probe))
+                            probe?.Change(_hysteresisMs, Timeout.Infinite);
+                        return;
+                    }
+                    phase = TransitionTo(AppPhase.S1Active);
+                }
+                else if (Phase == AppPhase.S1Active && !UiLocked && ForeignOverlayStillInForeground())
+                {
+                    phase = EnterYield();
+                }
+            }
+            if (phase is { } p) PhaseChanged?.Invoke(this, p);
+        }, null, _hysteresisMs, Timeout.Infinite);
+        _yieldRecoverTimer = probe;
+    }
+
+    // 恢复/推迟判定所需的前台复核（线程池线程可调，纯 Win32 查询）：
+    // 类名判定复用 WinEventWatcher 的前缀表，两处必须同源，避免前缀漂移
+    private static bool ForeignOverlayStillInForeground()
+    {
+        IntPtr fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero) return false;
+        var sb = new StringBuilder(256);
+        return GetClassNameW(fg, sb, sb.Capacity) > 0 &&
+               Detection.WinEventWatcher.IsForeignOverlay(sb.ToString());
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hwnd, StringBuilder lpClassName, int maxCount);
 
     /// <summary>锁外依次触发快照事件（先相位后页码，与历史顺序一致）。</summary>
     private void Fire(AppPhase? phase, int? slide)

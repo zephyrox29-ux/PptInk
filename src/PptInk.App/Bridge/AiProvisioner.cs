@@ -26,6 +26,11 @@ internal static class AiProvisioner
     private const string PyPiNumpyJson = "https://pypi.org/pypi/numpy/json";
     private const int TimeoutSeconds = 90;
 
+    // HTTP UA 跟程序集版本（v1.1.0 统一 —— 原先硬编码 "PptInk/0.9.9"，与实际版本漂移，
+    // 排障时无法从服务端日志判断用户跑的哪个版本）
+    private static readonly string UserAgent =
+        "PptInk/" + (typeof(AiProvisioner).Assembly.GetName().Version?.ToString(3) ?? "1.1.0");
+
     public sealed record Result(bool Ok, string Message);
 
     /// <summary>确保 AI 环境可用（检测 + 自动补齐 + 复检）。</summary>
@@ -88,8 +93,18 @@ internal static class AiProvisioner
             if (p is null) return false;
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(25));
-            await p.WaitForExitAsync(cts.Token);
-            return p.ExitCode == 0;
+            try
+            {
+                await p.WaitForExitAsync(cts.Token);
+                return p.ExitCode == 0;
+            }
+            catch
+            {
+                // 超时/取消不会终止子进程（Process.Dispose 只释放句柄）：不补杀会留下孤儿
+                // python/pip 继续在后台跑。按原语义返回 false。
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                return false;
+            }
         }
         catch { return false; }
     }
@@ -110,8 +125,17 @@ internal static class AiProvisioner
             if (p is null) return false;
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(10));
-            await p.WaitForExitAsync(cts.Token);
-            return p.ExitCode == 0;
+            try
+            {
+                await p.WaitForExitAsync(cts.Token);
+                return p.ExitCode == 0;
+            }
+            catch
+            {
+                // 同 HasNumpyAsync：取消等待后必须补杀子进程，不留孤儿。
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                return false;
+            }
         }
         catch { return false; }
     }
@@ -134,8 +158,18 @@ internal static class AiProvisioner
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(TimeSpan.FromMinutes(3));
-                await p.WaitForExitAsync(cts.Token);
-                if (p.ExitCode == 0) return true;
+                try
+                {
+                    await p.WaitForExitAsync(cts.Token);
+                    if (p.ExitCode == 0) return true;
+                }
+                catch
+                {
+                    // 超时/取消不杀子进程 → pip 孤儿继续向 site-packages 写入，与随后
+                    // wheel 解压（ExtractToDirectory overwriteFiles:true）并发写同一目录，
+                    // 可能装出损坏的 NumPy。补杀后再按原语义走 wheel 兜底。
+                    try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                }
             }
         }
         catch { /* 嵌入式 Python 无 pip → 走 wheel 解压 */ }
@@ -158,7 +192,7 @@ internal static class AiProvisioner
             Directory.CreateDirectory(sitePackages);
 
             using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("PptInk/0.9.9");
+            http.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
 
             // PyPI JSON：挑一个 cp312 win_amd64 的 wheel
             string json = await http.GetStringAsync(PyPiNumpyJson, ct);
@@ -201,7 +235,7 @@ internal static class AiProvisioner
             Directory.CreateDirectory(pyDir);
 
             using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-            http.DefaultRequestHeaders.UserAgent.ParseAdd("PptInk/0.9.9");
+            http.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
 
             string tmpZip = Path.Combine(Path.GetTempPath(), "pptink-python-embed.zip");
             progress?.Report("下载嵌入式 Python 运行时……");

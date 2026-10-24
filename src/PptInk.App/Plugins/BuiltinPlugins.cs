@@ -27,7 +27,12 @@ public sealed class TimerPlugin : IPlugin
         _panel.ShowPanel();
     }
 
-    public void Deactivate() => _panel?.HidePanel();
+    public void Deactivate()
+    {
+        // 停用须停内部计时器再隐藏：HidePanel 只折叠不停表，倒计时/正计时会在隐藏后空转
+        _panel?.StopForHost();
+        _panel?.HidePanel();
+    }
 }
 
 // ==================== 焦点聚光灯遮罩 ====================
@@ -67,8 +72,23 @@ public sealed class SnapshotPlugin : IPlugin
         var path = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
             $"PptInk快照-{DateTime.Now:HHmmss}.png");
-        ScreenCapture.CaptureActiveShow(path);
-        api.ShowToast($"快照已保存：{System.IO.Path.GetFileName(path)}");
+        // GDI 截图 + PNG 编码是纯计算（4K 上实测量级数百毫秒），不依赖 UI 线程 ——
+        // 在 UI 线程同步执行会让整个舞台（输入/计时器）冻结编码时长。挪到线程池执行，
+        // 激活先给「进行中」反馈；Toast.Show 线程安全（内部封送 UI 线程），完成后回提示。
+        api.ShowToast("正在截图…");
+        Task.Run(() =>
+        {
+            try
+            {
+                ScreenCapture.CaptureActiveShow(path);
+                api.ShowToast($"快照已保存：{System.IO.Path.GetFileName(path)}");
+            }
+            catch (Exception ex)
+            {
+                Core.AppLog.Instance.Warn($"快照保存失败：{ex.Message}");
+                api.ShowToast("快照保存失败");
+            }
+        });
     }
 
     public void Deactivate() { }
@@ -110,7 +130,12 @@ public sealed class RandomPickPlugin : IPlugin
         _panel.ShowPanel();
     }
 
-    public void Deactivate() => _panel?.HidePanel();
+    public void Deactivate()
+    {
+        // 停用须停内部计时器再隐藏：HidePanel 只折叠不停表，70ms 滚动会在隐藏后空转
+        _panel?.StopForHost();
+        _panel?.HidePanel();
+    }
 }
 
 // ==================== 板中板（画中画白板） ====================

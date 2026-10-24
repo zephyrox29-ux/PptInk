@@ -75,9 +75,10 @@ public sealed class ComWatcher : IPresentationChannel
         if (_app is not null) return;
         foreach (var progId in ProgIds)
         {
+            dynamic? app = null;
             try
             {
-                dynamic? app = OleGetActiveObject(progId);
+                app = OleGetActiveObject(progId);
                 if (app is null) continue;
 
                 // 事件订阅：C# dynamic 对 COM 自动走 IConnectionPoint::Advise
@@ -96,13 +97,37 @@ public sealed class ComWatcher : IPresentationChannel
                 TryReportOngoingShow(app);
                 return;
             }
-            catch (COMException) { /* 该 ProgID 无运行实例或事件签名不兼容：试下一个 */ }
+            catch (COMException)
+            {
+                // 该 ProgID 无运行实例或事件签名不兼容：回滚后试下一个
+                RollbackPartialBind(app);
+            }
             catch (Microsoft.CSharp.RuntimeBinder.RuntimeBinderException)
             {
-                // WPS 部分版本事件签名差异：解绑后交给 WinEvent 兜底
+                // WPS 部分版本事件签名差异：回滚后交给 WinEvent 兜底。
+                // 审查修复：原实现仅记日志后继续 —— 第二/三个 += 抛出时已 Advise 的
+                // 连接点不释放、_app 保持 null 使 IsHealthy=false，5s 重绑定定时器每轮
+                // 再 Advise 一个新委托实例，连接点/托管 sink 按每 5 秒 1 个无界累积。
                 AppLog.Instance.Warn($"{progId} 事件接口不兼容（WPS 旧版本），主通道让位给兜底通道");
+                RollbackPartialBind(app);
             }
         }
+    }
+
+    /// <summary>订阅中途失败（第二个/第三个 += 抛出）的回滚：按局部 app 解绑已成功
+    /// Advise 的事件并释放 RCW。不能用 Unbind() —— 其以 _app 已赋值为前提，而中途失败
+    /// 时 _app 尚未赋值。各步独立吞异常：单个解绑失败不得中断其余回滚与 ProgID 遍历。</summary>
+    private void RollbackPartialBind(dynamic? app)
+    {
+        var begin = _beginHandler;
+        var next = _nextHandler;
+        var end = _endHandler;
+        _beginHandler = _nextHandler = _endHandler = null;
+        if (app is null) return;
+        try { if (begin is not null) app.SlideShowBegin -= begin; } catch { }
+        try { if (next is not null) app.SlideShowNextSlide -= next; } catch { }
+        try { if (end is not null) app.SlideShowEnd -= end; } catch { }
+        try { if (Marshal.IsComObject(app)) Marshal.ReleaseComObject(app); } catch { }
     }
 
     private void TryReportOngoingShow(dynamic app)

@@ -102,9 +102,6 @@ public sealed class SettingsWindow : Window
         Navigate("appearance", initial: true);
     }
 
-    /// <summary>主题热切换钩子（编排器接线）。控件全走 DynamicResource 引用，此处无需手动刷新。</summary>
-    public void OnThemeApplied() { }
-
     /// <summary>应用版本号（v0.4.1 修复：从程序集读取，自动跟随 csproj，永不失同步。
     /// 原硬编码 "v1.2" 与实际版本 0.4.0 脱节 —— 用户反馈问题时无法准确标识版本，
     /// 售后定位困难。程序集缺失时回退 0.4.0）。</summary>

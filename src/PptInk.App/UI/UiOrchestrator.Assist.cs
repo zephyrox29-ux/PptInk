@@ -42,6 +42,15 @@ public sealed partial class UiOrchestrator
             if (on)
             {
                 _ = _svc.PythonBridge.EnsureStartedAsync();     // 池线程冷启动，不冻结界面
+                // 仅手动模式（v1.1.0 修复）：该模式的承诺是「仅点【AI】才认」，但按钮此前
+                // 只是电源开关——识别永远不发生，选了这个模式等于把 AI 关了。开机的同时
+                // 对最后一笔跑一次识别（本段已在 UI 线程；冷启动未就绪时 RunAssist 会给出
+                //「稍后再试」提示，识别本体在 Task.Run 里不卡界面）。
+                if (_svc.Config.AiTriggerTiming == "manual" &&
+                    _svc.InkEngine.LastDrawableStroke() is { } lastStroke)
+                {
+                    RunAssist(lastStroke, manual: true);
+                }
             }
             else
             {
@@ -134,8 +143,9 @@ public sealed partial class UiOrchestrator
 
         // 识别范围：recent 合并最近 N 笔
         StrokeData scope = target;
+        List<StrokeData> scopeStrokes = new() { target };
         if (cfg.AiScope == "recent")
-            scope = MergeRecentScope(engine, target, Math.Clamp(cfg.AiScopeStrokeCount, 2, 6));
+            scope = MergeRecentScope(engine, target, Math.Clamp(cfg.AiScopeStrokeCount, 2, 6), out scopeStrokes);
 
         int timeoutMs = Math.Clamp(cfg.AiRecognizeTimeoutMs, 300, 10000);
         double threshold = Math.Clamp(cfg.AiConfidenceThreshold, 0.30, 0.98);
@@ -183,9 +193,9 @@ public sealed partial class UiOrchestrator
                     return;
                 }
                 if (!manual && cfg.ShapeAssistMode == "bubble" && !_assistSessionOff)
-                    ShowAssistBubble(engine, target, shape, ShapeName(shape.Shape));
+                    ShowAssistBubble(engine, target, scopeStrokes, shape, ShapeName(shape.Shape));
                 else
-                    CommitRegularized(engine, target, shape, ShapeName(shape.Shape), manual);
+                    CommitRegularized(engine, target, scopeStrokes, shape, ShapeName(shape.Shape), manual);
             });
         });
     }
@@ -194,13 +204,14 @@ public sealed partial class UiOrchestrator
     /// 审查修复：target.Bounds 是墨迹层窗口本地坐标（引擎点原点=窗口左上角），
     /// 原实现直接当屏幕绝对坐标传给 ShowNearAnchor —— 双屏（墨迹层在扩展屏）时
     /// 气泡按主屏原点钳制，弹到完全无关的位置。现补上墨迹层窗口原点偏移。</summary>
-    private void ShowAssistBubble(InkEngine engine, StrokeData target, PythonBridge.RecognizedShape shape, string name)
+    private void ShowAssistBubble(InkEngine engine, StrokeData target, List<StrokeData> scopeStrokes,
+        PythonBridge.RecognizedShape shape, string name)
     {
         _shapeBubble?.Close();
         var b = target.Bounds;
         if (_overlay is { } ov) b.Offset(ov.Left, ov.Top);   // 本地 → 屏幕绝对 DIP
         _shapeBubble = new ShapeAssistBubble(name, shape.Confidence,
-            onConfirm: () => CommitRegularized(engine, target, shape, name),
+            onConfirm: () => CommitRegularized(engine, target, scopeStrokes, shape, name),
             onSessionOff: () => _assistSessionOff = true);
         if (_overlay is { } ovb) ovb.AddToLayer(StageLayer.Ui, _shapeBubble, 0, 0);   // 短命元素：即建即挂
         if (_shapeBubble.ShowNearAnchor(b, ShapeAssistBubble.BubbleWidth, ShapeAssistBubble.BubbleHeight, 20))
@@ -213,12 +224,19 @@ public sealed partial class UiOrchestrator
         }
     }
 
-    private void CommitRegularized(InkEngine engine, StrokeData target, PythonBridge.RecognizedShape shape, string name, bool manual = false)
+    private void CommitRegularized(InkEngine engine, StrokeData target, List<StrokeData> scopeStrokes,
+        PythonBridge.RecognizedShape shape, string name, bool manual = false)
     {
         var regularized = new StrokeData(target.Pen);
         foreach (var p in shape.Points) regularized.Add(p);
-        // 目标可能已被撤销/擦除（IndexOf<0）→ 按实际结果反馈，避免误报「已规整」
-        if (engine.ReplaceStroke(target, regularized))
+        // 识别请求发的是合并 scope 的几何（AiScope=recent 多笔组合图形）→ 规整笔必须
+        // 替换范围内全部原笔，否则前 N-1 笔手绘原迹留在页上与新图形叠成重影。
+        // 单笔范围仍走 ReplaceStroke（保持原 z 位替换语义）。
+        bool ok = scopeStrokes.Count > 1
+            ? engine.ReplaceStrokeRange(scopeStrokes, target, regularized)
+            : engine.ReplaceStroke(target, regularized);
+        // 目标可能已被撤销/擦除 → 按实际结果反馈，避免误报「已规整」
+        if (ok)
         {
             if (manual || _svc.Config.AiHighlightOnSuccess)
                 Toast.Show($"已规整为「{name}」（置信度 {shape.Confidence:P0}）· 可撤销");
@@ -228,16 +246,26 @@ public sealed partial class UiOrchestrator
     }
 
     /// <summary>识别范围 recent：把页面上最近 N 笔的点合并成一笔（多笔组合图形用）。
-    /// 合并后不足 4 点则退回仅识别最后一笔（避免拼出无意义的折线）。</summary>
-    private StrokeData MergeRecentScope(InkEngine engine, StrokeData last, int count)
+    /// 合并后不足 4 点则退回仅识别最后一笔（避免拼出无意义的折线）。
+    /// mergedStrokes：参与合并的原笔清单 —— 规整成功后须整批替换（教训：识别只发合并
+    /// 几何、回写只换最后一笔，会造成手绘原笔 + 规整笔的重影）。</summary>
+    private StrokeData MergeRecentScope(InkEngine engine, StrokeData last, int count, out List<StrokeData> mergedStrokes)
     {
-        var strokes = engine.CurrentPage.Strokes;
+        // 持锁快照（v1.1.0 修复）：停笔排程的识别触发时老师可能已开始写下一笔，
+        // 直接枚举 CurrentPage.Strokes 与墨迹线程的抬笔提交并发会抛「集合已修改」。
+        var strokes = engine.SnapshotRecentStrokes(count);
+        mergedStrokes = new List<StrokeData> { last };
         if (strokes.Count <= 1 || count <= 1) return last;
         var merged = new StrokeData(last.Pen);
-        int start = Math.Max(0, strokes.Count - count);
-        for (int i = start; i < strokes.Count; i++)
-            foreach (var p in strokes[i].Points) merged.Add(p);
-        return merged.Points.Count >= 4 ? merged : last;
+        var batch = new List<StrokeData>();
+        foreach (var s in strokes)
+        {
+            batch.Add(s);
+            foreach (var p in s.Points) merged.Add(p);
+        }
+        if (merged.Points.Count < 4) return last;   // 退回单笔：mergedStrokes 保持仅 target
+        mergedStrokes = batch;
+        return merged;
     }
 
     /// <summary>解析形状白名单（分号/逗号分隔）。空 = 全部允许。</summary>

@@ -45,19 +45,19 @@ public sealed class PythonBridge : IDisposable
         get
         {
             var exeDir = AppContext.BaseDirectory;
-            string[] candidates =
-            {
-                Path.Combine(exeDir, "bridge"),
-                Path.Combine(exeDir, "python"),
-                Path.GetFullPath(Path.Combine(exeDir, "..", "python")),
-                Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "python")),  // bin\{cfg}\net8.0 → 仓库根
-                exeDir,
-            };
-            foreach (var dir in candidates)
-                if (File.Exists(Path.Combine(dir, "ink_bridge.py")))
-                    return dir;
-            // 全部未命中：回退首选布局（让 CheckHealthAsync 给出"找不到桥接脚本"的明确路径）
-            return candidates[0];
+            var portable = Path.Combine(exeDir, "bridge");
+            if (File.Exists(Path.Combine(portable, "ink_bridge.py"))) return portable;
+
+            // 开发布局（v1.1.0 修复）：从 exe 所在目录逐级向上找 python\ink_bridge.py。
+            // 原先写死 "..\..\..\python"（注释声称到仓库根）—— 实际 exe 落在
+            // bin\{cfg}\net8.0-windows\，到仓库根要 4~5 级，dotnet run 下 AI 自检永远
+            // "找不到桥接脚本"。逐级探测不依赖目录层级，加 TFM 子目录后也不会再漏。
+            for (var dir = new DirectoryInfo(exeDir); dir is not null; dir = dir.Parent)
+                if (File.Exists(Path.Combine(dir.FullName, "python", "ink_bridge.py")))
+                    return Path.Combine(dir.FullName, "python");
+
+            // 全部未命中：回退便携布局（让 CheckHealthAsync 给出"找不到桥接脚本"的明确路径）
+            return portable;
         }
     }
 
@@ -131,8 +131,7 @@ public sealed class PythonBridge : IDisposable
             // "握手超时"，这是用户反馈"AI bridge 未检测到"的最常见根因。
             _stdin.WriteLine(JsonSerializer.Serialize(new { cmd = "hello", client = BridgeId }));
             var readTask = _stdout.ReadLineAsync();
-            if (!readTask.Wait(TimeSpan.FromSeconds(25)))
-                throw new TimeoutException("AI 桥握手超时（25 秒）：Python 或 NumPy 未就绪。请运行设置中心「快速检测 AI 功能」查看具体原因。");
+            WaitHandshakeOrDispose(readTask);
             var hello = readTask.Result;
             if (hello is null || !hello.Contains("ok"))
                 throw new IOException("AI 桥握手协议异常");
@@ -143,6 +142,21 @@ public sealed class PythonBridge : IDisposable
             // running but unusable child that blocks all future retry attempts.
             Cleanup();
             throw;
+        }
+    }
+
+    /// <summary>等待握手响应（最长 25s），随时可被 Dispose 置位的 _disposed 打断。
+    /// 教训：此前持锁同步 Wait(25s) 不可打断 —— 退出路径的 Dispose 在 _gate 上排队等完整
+    /// 冷启动，UI 线程最长卡 25s。分片轮询让 Dispose 置位后握手立即放弃、锁即刻释放。</summary>
+    private void WaitHandshakeOrDispose(Task<string?> readTask)
+    {
+        long deadline = Environment.TickCount64 + 25_000;
+        while (!readTask.IsCompleted)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(PythonBridge));
+            if (Environment.TickCount64 >= deadline)
+                throw new TimeoutException("AI 桥握手超时（25 秒）：Python 或 NumPy 未就绪。请运行设置中心「快速检测 AI 功能」查看具体原因。");
+            readTask.Wait(100);
         }
     }
 
@@ -407,10 +421,13 @@ public sealed class PythonBridge : IDisposable
 
     public void Dispose()
     {
+        // 先置位再抢锁（volatile 写）：池线程若正持 _gate 做冷启动握手，其分片等待观察到
+        // _disposed 即刻放弃 → 锁快速释放，本方法不再排队等最长 25s 的握手。
+        // 配套：AppServices.Shutdown 已把会话墨迹快照排在本释放之前，双保险防强杀丢板书。
+        if (_disposed) return;
+        _disposed = true;
         lock (_gate)
         {
-            if (_disposed) return;
-            _disposed = true;
             Cleanup();
         }
     }

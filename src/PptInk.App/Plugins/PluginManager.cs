@@ -15,8 +15,8 @@ namespace PptInk.Plugins;
 /// 插件管理器：
 ///  - 插件包为 zip（图标 + manifest.json + 脚本）；
 ///  - 脚本运行于 MoonSharp Lua 沙箱：仅能访问 manifest 声明的 API（白名单注入），
-///    file/network/clipboard 权限需显式声明并经用户确认；
-///  - 插件包支持可选签名校验（未签名包首次启用弹确认）；
+///    file/clipboard 权限需显式声明并经用户确认（network 权限暂无对应能力，声明了也不生效）；
+///  - 本版本不验签：Signature 字段只记日志警告，插件等同本机代码，只装可信来源的包；
 ///  - 内置首批插件以 C# 直接实现，走同一 Host API（M4 交付插件生态 v1）。
 /// </summary>
 public sealed class PluginManager
@@ -56,6 +56,47 @@ public sealed class PluginManager
         foreach (var id in Core.AppConfig.Current.DisabledPluginIds)
             _disabledIds.Add(id);
         RegisterBuiltins();
+        ScanInstalledPlugins();
+    }
+
+    /// <summary>启动扫描已安装插件（v1.1.0 修复）：InstallFromZip 只把插件注册进当前进程，
+    /// 重启后磁盘上的包无人问津 —— 用户装了插件，关程序再开就"消失"，插件生态只活在安装后的
+    /// 这一次运行里。逐目录走与安装一致的 manifest 校验后注册；单个坏包只跳过自身，绝不阻塞启动。</summary>
+    private void ScanInstalledPlugins()
+    {
+        try
+        {
+            if (!Directory.Exists(_pluginRoot)) return;
+            foreach (var dir in Directory.EnumerateDirectories(_pluginRoot))
+            {
+                var name = Path.GetFileName(dir);
+                if (name.StartsWith(".staging-", StringComparison.Ordinal) ||
+                    name.Contains(".backup-", StringComparison.Ordinal))
+                    continue;
+                try
+                {
+                    var manifestPath = Path.Combine(dir, "manifest.json");
+                    if (!File.Exists(manifestPath)) continue;
+                    var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(manifestPath), ManifestJsonOptions);
+                    if (manifest is null) { Core.AppLog.Instance.Warn($"跳过无效插件目录（manifest 反序列化为空）：{name}"); continue; }
+                    ValidateManifest(manifest, dir);
+                    if (_plugins.TryGetValue(manifest.Id, out var prior))
+                    {
+                        if (prior is not ScriptPlugin) { Core.AppLog.Instance.Warn($"跳过与内置插件同 ID 的已装包：{manifest.Id}"); continue; }
+                        continue;   // 同 ID 脚本插件已注册（安装于本进程内）：保留更新后的注册
+                    }
+                    Register(new ScriptPlugin(manifest, dir));
+                }
+                catch (Exception ex)
+                {
+                    Core.AppLog.Instance.Warn($"启动加载插件失败（已跳过）：{name} — {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Core.AppLog.Instance.Error(ex, "插件启动扫描失败");
+        }
     }
 
     private void RegisterBuiltins()
@@ -104,39 +145,41 @@ public sealed class PluginManager
             Directory.CreateDirectory(_pluginRoot);
             staging = Path.Combine(_pluginRoot, ".staging-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(staging);
-            ZipFile.ExtractToDirectory(zipPath, staging);
+            // v1.1.0：流式解压并按实际写入字节计数。原先的预检查用的是 zip 中央目录里的
+            // 声明长度（ZipArchiveEntry.Length），恶意包可以把声明写小、deflate 流实际展开很大，
+            // 20 MB 限制形同虚设（磁盘 DoS）。预检查保留（快速失败），真限制在这里兜底。
+            const long maxBytes = 20L * 1024 * 1024;
+            long written = 0;
+            var buffer = new byte[81_920];
+            using (var archive = ZipFile.OpenRead(zipPath))
+            {
+                foreach (var entry in archive.Entries)
+                {
+                    var dest = Path.GetFullPath(Path.Combine(staging, entry.FullName.Replace('\\', '/')));
+                    var stagingRoot = Path.GetFullPath(staging) + Path.DirectorySeparatorChar;
+                    if (!dest.StartsWith(stagingRoot, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("插件包包含越界路径");
+                    if (string.IsNullOrEmpty(entry.Name)) { Directory.CreateDirectory(dest); continue; }
+                    Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                    using (var src = entry.Open())
+                    using (var dst = File.Create(dest))
+                    {
+                        int read;
+                        while ((read = src.Read(buffer, 0, buffer.Length)) > 0)
+                        {
+                            written += read;
+                            if (written > maxBytes) throw new InvalidDataException("插件包实际解压体积超过 20 MB 限制");
+                            dst.Write(buffer, 0, read);
+                        }
+                    }
+                }
+            }
 
             var manifestPath = Path.Combine(staging, "manifest.json");
             if (!File.Exists(manifestPath)) throw new InvalidDataException("缺少 manifest.json");
-            var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(manifestPath), ManifestJsonOptions);
-            if (manifest is null || manifest.Magic is < 1 or > 3)
-                throw new InvalidDataException("manifest 魔数非法（须为 1/2/3）");
-            if (string.IsNullOrWhiteSpace(manifest.Id) ||
-                !Regex.IsMatch(manifest.Id, @"\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\z", RegexOptions.CultureInvariant))
-                throw new InvalidDataException("插件 ID 只能包含字母、数字、点、下划线和连字符");
-            if (string.IsNullOrWhiteSpace(manifest.Name) || manifest.Name.Length > 120)
-                throw new InvalidDataException("插件名称为空或过长");
-            manifest.Name = manifest.Name.Trim();
-            if (manifest.Author?.Length > 200 || manifest.Description?.Length > 1000 || manifest.Version?.Length > 64)
-                throw new InvalidDataException("插件作者、描述或版本字段过长");
-            if (string.IsNullOrWhiteSpace(manifest.Entry) || manifest.Entry.Length > 240 || Path.IsPathRooted(manifest.Entry))
-                throw new InvalidDataException("入口脚本路径非法");
-
-            var entryPath = Path.GetFullPath(Path.Combine(staging,
-                manifest.Entry.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar)));
-            var rootPrefix = Path.GetFullPath(staging) + Path.DirectorySeparatorChar;
-            if (!entryPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(entryPath))
-                throw new InvalidDataException("入口脚本缺失或越过插件目录");
-            if (new FileInfo(entryPath).Length > 256 * 1024)
-                throw new InvalidDataException("插件脚本过大（>256KB）");
-
-            manifest.Permissions ??= Array.Empty<string>();
-            var knownPermissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "file", "network", "clipboard" };
-            if (manifest.Permissions.Any(p => string.IsNullOrWhiteSpace(p) || !knownPermissions.Contains(p)))
-                throw new InvalidDataException("manifest 声明了未知权限");
-            manifest.Permissions = manifest.Permissions.Select(p => p.ToLowerInvariant())
-                .Distinct(StringComparer.Ordinal).ToArray();
-            NormalizeManifest(manifest);
+            var manifest = JsonSerializer.Deserialize<PluginManifest>(File.ReadAllText(manifestPath), ManifestJsonOptions)
+                ?? throw new InvalidDataException("manifest 反序列化为空");
+            ValidateManifest(manifest, staging);
 
             // Do not replace an active plugin or shadow a built-in plugin ID.
             if (_plugins.TryGetValue(manifest.Id, out var prior))
@@ -206,6 +249,39 @@ public sealed class PluginManager
             if (backup is not null && Directory.Exists(backup) && (finalDir is null || !Directory.Exists(finalDir)))
                 try { Directory.Move(backup, finalDir!); } catch { }
         }
+    }
+
+    /// <summary>manifest 全量校验（安装与启动扫描共用同一套规则，杜绝"装得进、重启认不出"）。</summary>
+    private static void ValidateManifest(PluginManifest manifest, string baseDir)
+    {
+        if (manifest.Magic is < 1 or > 3)
+            throw new InvalidDataException("manifest 魔数非法（须为 1/2/3）");
+        if (string.IsNullOrWhiteSpace(manifest.Id) ||
+            !Regex.IsMatch(manifest.Id, @"\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\z", RegexOptions.CultureInvariant))
+            throw new InvalidDataException("插件 ID 只能包含字母、数字、点、下划线和连字符");
+        if (string.IsNullOrWhiteSpace(manifest.Name) || manifest.Name.Length > 120)
+            throw new InvalidDataException("插件名称为空或过长");
+        manifest.Name = manifest.Name.Trim();
+        if (manifest.Author?.Length > 200 || manifest.Description?.Length > 1000 || manifest.Version?.Length > 64)
+            throw new InvalidDataException("插件作者、描述或版本字段过长");
+        if (string.IsNullOrWhiteSpace(manifest.Entry) || manifest.Entry.Length > 240 || Path.IsPathRooted(manifest.Entry))
+            throw new InvalidDataException("入口脚本路径非法");
+
+        var entryPath = Path.GetFullPath(Path.Combine(baseDir,
+            manifest.Entry.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar)));
+        var rootPrefix = Path.GetFullPath(baseDir) + Path.DirectorySeparatorChar;
+        if (!entryPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(entryPath))
+            throw new InvalidDataException("入口脚本缺失或越过插件目录");
+        if (new FileInfo(entryPath).Length > 256 * 1024)
+            throw new InvalidDataException("插件脚本过大（>256KB）");
+
+        manifest.Permissions ??= Array.Empty<string>();
+        var knownPermissions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "file", "network", "clipboard" };
+        if (manifest.Permissions.Any(p => string.IsNullOrWhiteSpace(p) || !knownPermissions.Contains(p)))
+            throw new InvalidDataException("manifest 声明了未知权限");
+        manifest.Permissions = manifest.Permissions.Select(p => p.ToLowerInvariant())
+            .Distinct(StringComparer.Ordinal).ToArray();
+        NormalizeManifest(manifest);
     }
 
     /// <summary>Normalize layout metadata from an untrusted plugin manifest before WPF sees it.</summary>
@@ -297,8 +373,10 @@ public sealed class PluginManager
             return;
         }
         var api = new HostApiBridge(_ink, _ai, plugin.Manifest);
-        // 权限确认：首次启用含敏感权限的插件时弹一次确认
-        if (plugin.Manifest.Permissions.Any(p => p is "file" or "network" or "clipboard") &&
+        // 权限确认：首次启用含敏感权限的插件时弹一次确认。
+        // v1.1.0：network 不再参与弹窗 —— 沙箱没有注入任何网络 API，声明了也不生效，
+        // 为它弹"授权"对话框是误导（授权心理学：用户以为拒了就挡住了什么）。
+        if (plugin.Manifest.Permissions.Any(p => p is "file" or "clipboard") &&
             !IsTrusted(plugin.Manifest.Id))
         {
             var msg = $"插件「{plugin.Manifest.Name}」申请权限：\n{string.Join("、", plugin.Manifest.Permissions)}\n\n仅本次放映允许？";
