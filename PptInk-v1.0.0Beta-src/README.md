@@ -58,3 +58,8 @@ docs/CHANGELOG.md   版本历史
 - 只能在 Windows 10/11 x64 上运行（WPF 的限制）。
 - 触控手感、穿透、PowerPoint COM 翻页、希沃设备行为都得在真机上验收，本仓库的构建覆盖不到。
 - 主程序是自包含单文件，杀毒软件可能误报或拖慢首次启动，把 `app/bridge/` 加白名单会好一些。
+## 许可证
+
+本项目采用 **GNU Affero General Public License v3.0 (AGPL-3.0)** 授权，全文见 [LICENSE](./LICENSE)。
+
+贡献前请阅读并同意 [CLA.md](./CLA.md)（贡献者许可协议）；贡献者名录见 [CONTRIBUTORS.md](./CONTRIBUTORS.md)。
