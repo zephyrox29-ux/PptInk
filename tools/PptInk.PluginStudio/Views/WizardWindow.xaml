@@ -1,0 +1,104 @@
+<Window x:Class="PptInk.PluginStudio.Views.WizardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="新建插件 · PptInk 插件工作室"
+        Height="600" Width="780" MinHeight="520" MinWidth="680"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 步骤条 -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,16">
+            <Border x:Name="Dot1" Background="{StaticResource Accent}" CornerRadius="12" Width="24" Height="24">
+                <TextBlock Text="1" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <TextBlock x:Name="Label1" Text="选择类型" VerticalAlignment="Center" Margin="8,0,20,0" FontWeight="SemiBold"/>
+            <Border x:Name="Dot2" Background="#C9D2DC" CornerRadius="12" Width="24" Height="24">
+                <TextBlock Text="2" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <TextBlock x:Name="Label2" Text="选择模板" VerticalAlignment="Center" Margin="8,0,20,0" Foreground="{StaticResource TextSecondary}"/>
+            <Border x:Name="Dot3" Background="#C9D2DC" CornerRadius="12" Width="24" Height="24">
+                <TextBlock Text="3" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <TextBlock x:Name="Label3" Text="基本信息" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="{StaticResource TextSecondary}"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" Background="{StaticResource PanelBg}" CornerRadius="12" Padding="20">
+            <Grid>
+                <!-- 步骤 1：类型 -->
+                <StackPanel x:Name="StepType">
+                    <TextBlock Text="选择插件类型" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}"/>
+                    <TextBlock Text="插件类型决定它与宿主交互的方式，创建后仍可在工作台修改。" Foreground="{StaticResource TextSecondary}" Margin="0,6,0,16"/>
+                    <RadioButton x:Name="RadioPanel" GroupName="kind" IsChecked="True" Margin="0,6">
+                        <StackPanel>
+                            <TextBlock Text="面板类（Panel）" FontWeight="SemiBold"/>
+                            <TextBlock Text="宿主负责渲染面板（文本 / 滑条 / 按钮），你只写逻辑。适合计时器、投票、计分板。" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="RadioDraw" GroupName="kind" Margin="0,6">
+                        <StackPanel>
+                            <TextBlock Text="绘制类（Draw）" FontWeight="SemiBold"/>
+                            <TextBlock Text="调用绘制 SDK 往板书写入矢量墨迹（可撤销、可导出）。适合图形、标注、模板。" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton x:Name="RadioFree" GroupName="kind" Margin="0,6">
+                        <StackPanel>
+                            <TextBlock Text="自由类（Free）" FontWeight="SemiBold"/>
+                            <TextBlock Text="点按即启用内置脚本，自行接管交互。适合截图、点名、快捷动作。" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </RadioButton>
+                </StackPanel>
+
+                <!-- 步骤 2：模板 -->
+                <StackPanel x:Name="StepTemplate" Visibility="Collapsed">
+                    <TextBlock Text="选择一个起步模板" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}"/>
+                    <TextBlock Text="模板会生成可直接运行的面板与脚本骨架，之后在工作台随意修改。" Foreground="{StaticResource TextSecondary}" Margin="0,6,0,16"/>
+                    <ComboBox x:Name="TemplateCombo" Height="34" DisplayMemberPath="Display" FontSize="13"/>
+                    <TextBlock x:Name="TemplateDesc" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,12,0,0"/>
+                </StackPanel>
+
+                <!-- 步骤 3：基本信息 -->
+                <ScrollViewer x:Name="StepBasic" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="基本信息" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource TextPrimary}"/>
+                        <TextBlock Text="插件 Id 是全局唯一标识（字母/数字/点/下划线/连字符），留空将自动生成。" Foreground="{StaticResource TextSecondary}" Margin="0,6,0,16"/>
+
+                        <TextBlock Text="插件 Id"/>
+                        <TextBox x:Name="IdBox" Height="30" Margin="0,4,0,12" Text="com.example.myplugin"/>
+
+                        <TextBlock Text="名称"/>
+                        <TextBox x:Name="NameBox" Height="30" Margin="0,4,0,12" Text="我的插件"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="版本"/>
+                                <TextBox x:Name="VersionBox" Height="30" Margin="0,4,0,0" Text="1.0.0"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="作者"/>
+                                <TextBox x:Name="AuthorBox" Height="30" Margin="0,4,0,0" Text=""/>
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock Text="描述" Margin="0,12,0,0"/>
+                        <TextBox x:Name="DescBox" Height="60" Margin="0,4,0,0" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </Border>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button x:Name="BackBtn" Content="上一步" Style="{StaticResource GhostButton}" Click="Back_Click"/>
+            <Button x:Name="NextBtn" Content="下一步" Style="{StaticResource PrimaryButton}" Click="Next_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

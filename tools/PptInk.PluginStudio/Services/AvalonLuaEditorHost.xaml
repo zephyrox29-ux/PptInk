@@ -1,0 +1,21 @@
+<UserControl x:Class="PptInk.PluginStudio.Services.AvalonLuaEditorHost"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:avalonedit="http://icsharpcode.net/sharpdevelop/avalonedit">
+    <Grid>
+        <avalonedit:TextEditor x:Name="Editor"
+                               FontFamily="Consolas, Cascadia Mono, Microsoft YaHei UI"
+                               FontSize="13"
+                               ShowLineNumbers="True"
+                               WordWrap="False"
+                               HorizontalScrollBarVisibility="Auto"
+                               VerticalScrollBarVisibility="Auto" />
+        <Popup x:Name="CompletionPopup" PlacementTarget="{Binding ElementName=Editor}"
+               Placement="Bottom" AllowsTransparency="True" StaysOpen="False" PopupAnimation="Fade">
+            <Border Background="White" BorderBrush="#D9DEE5" BorderThickness="1" CornerRadius="6" Padding="2" MaxHeight="220">
+                <ListBox x:Name="CompletionList" BorderThickness="0" Width="260"
+                         MouseDoubleClick="CompletionList_MouseDoubleClick" />
+            </Border>
+        </Popup>
+    </Grid>
+</UserControl>
