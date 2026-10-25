@@ -1,7 +1,7 @@
 # PPTink 贡献者许可协议（Contributor License Agreement）
 
 感谢您考虑为 PPTink 做出贡献！在提交您的第一个 Pull Request 之前，
-请阅读本协议。这是您与 PPTink 项目及其维护者 xianfish（下称"项目方"）
+请阅读本协议。这是您与 PPTink 项目及其维护者 xianfish[@zephyrox29-ux]（下称"项目方"）
 之间的法律约定。
 
 ---
