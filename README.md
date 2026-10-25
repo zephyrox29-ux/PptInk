@@ -67,7 +67,7 @@ docs/CHANGELOG.md   版本历史
 
 ## 维护
 
-由 [@xianfish](https://github.com/xianfish) 发起并维护；v1.1.0 起的整改与后续开发由
+由 [Xianfish](https://github.com/zephyrox29-ux) 发起并维护；v1.1.0 起的整改与后续开发由
 [Hydrotessera](https://github.com/nullAqua) 参与。版本历史见 [docs/CHANGELOG.md](./docs/CHANGELOG.md)。
 
 ## 许可证
