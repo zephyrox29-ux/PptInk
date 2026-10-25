@@ -17,13 +17,15 @@ public sealed partial class Toolbar
     {
         var wa = ShowScreen.Bounds;
         _rootRow.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        double desiredW = Math.Max(340, _rootRow.DesiredSize.Width + 18);
+        // v1.1.1：行 DesiredSize 是缩放前本地尺寸，进屏幕坐标系必须乘 ScaleFactor
+        double scale = ScaleFactor;
+        double desiredW = Math.Max(340, (_rootRow.DesiredSize.Width + 18) * scale);
         double laneL = _dockLaneConfigured ? _dockLaneLeft : wa.Left + 240;
         double laneR = _dockLaneConfigured ? _dockLaneRight : wa.Right - 240;
         if (laneR <= laneL) { laneL = wa.Left + 8; laneR = wa.Right - 8; }
         double maxW = Math.Max(1, laneR - laneL);
         MaxWidth = maxW;
-        _toolScroller.MaxWidth = maxW;
+        _toolScroller.MaxWidth = maxW / Math.Max(0.01, scale);
         double w = Math.Min(desiredW, maxW);
         double savedX = _svc.Config.ToolbarDockX ?? double.NaN;
         double savedY = _svc.Config.ToolbarDockY;
@@ -34,7 +36,12 @@ public sealed partial class Toolbar
         double preferred = hasValidSavedDock ? savedX : wa.Left + (wa.Width - w) / 2;
         Left = Math.Clamp(preferred, laneL, Math.Max(laneL, laneR - w));
         UpdateLayout();
-        Top = DockBottom - Math.Max(ActualHeight, Math.Max(_rootRow.DesiredSize.Height + 14, 52));
+        // v1.1.2：自由拖动 —— 记忆的 Y 在屏内就尊重（含教师拖到屏幕中部的位置），
+        // 只有无效/出屏才回到默认停靠行。
+        double h = Math.Max(48, VisualHeight > 1 ? VisualHeight : (_rootRow.DesiredSize.Height + 14) * scale);
+        Top = double.IsFinite(savedY) && savedY >= wa.Top && savedY <= wa.Bottom - h
+            ? savedY
+            : DockBottom - h;
         _svc.Config.ToolbarDockX = Left;
         _svc.Config.ToolbarDockY = Top;
         _svc.Config.Save();
@@ -50,7 +57,8 @@ public sealed partial class Toolbar
         _dockBottom = Math.Clamp(dockBottom, wa.Top + 48, wa.Bottom - 8);
         _dockLaneConfigured = true;
         MaxWidth = Math.Max(1, _dockLaneRight - _dockLaneLeft);
-        _toolScroller.MaxWidth = MaxWidth;
+        // 槽宽是屏幕坐标；scroller 在缩放后的工具栏内部，约束要换算回本地坐标
+        _toolScroller.MaxWidth = MaxWidth / Math.Max(0.01, ScaleFactor);
         UpdateLayout();
         ClampToScreen();
     }
@@ -233,12 +241,18 @@ public sealed partial class Toolbar
         double laneL = _dockLaneConfigured ? _dockLaneLeft : wa.Left + 240;
         double laneR = _dockLaneConfigured ? _dockLaneRight : wa.Right - 240;
         if (laneR < laneL) laneR = laneL;
-        double w = Math.Max(ActualWidth, _capsuleMode ? 52 : Math.Max(1, _rootRow.DesiredSize.Width));
-        double desiredHeight = Math.Max(_rootRow.DesiredSize.Height + 14, 52);
-        double h = Math.Max(ActualHeight, _capsuleMode ? 52 : desiredHeight);
+        // v1.1.1：视觉口径（DesiredSize 含 LayoutTransform 缩放）。原 ActualWidth 是
+        // 变换前尺寸 —— 160% 档钳制过松（视觉越出中央槽），70% 档过紧（底边悬空），
+        // 还会把画笔面板向上展开的 Top 增量按未缩放高度拉回，面板压住副岛行。
+        double w = Math.Max(_capsuleMode ? 48 : 1, VisualWidth);
+        double h = Math.Max(_capsuleMode ? 48 : 1, VisualHeight);
         double maxLeft = Math.Max(laneL, laneR - w);
         Left = Math.Clamp(Left, laneL, maxLeft);
-        Top = DockBottom - h;
+        // v1.1.2：Y 轴自由化 —— 不再把 Top 拉回停靠行（会吞掉自由拖动的位置、也会把
+        // 画笔面板向上展开的高度打回去），只在出屏时钳回屏内。
+        double topMin = wa.Top + 8;
+        double topMax = Math.Max(topMin, wa.Bottom - h - 8);
+        Top = double.IsFinite(Top) ? Math.Clamp(Top, topMin, topMax) : DockBottom - h;
         _svc.Config.ToolbarDockX = Left;
         _svc.Config.ToolbarDockY = Top;
     }
@@ -264,12 +278,12 @@ public sealed partial class Toolbar
         if (_capsuleMode) return;
         if (IsPaletteOpen) HidePalette(immediate: true);
         _capsuleMode = true;
-        double cx = Left + ActualWidth / 2, cy = Top + ActualHeight / 2;
+        double cx = Left + VisualWidth / 2, cy = Top + VisualHeight / 2;
         _panelRoot.Visibility = Visibility.Collapsed;
         _capsuleRoot.Visibility = Visibility.Visible;
         UpdateLayout();
-        Left = cx - ActualWidth / 2;
-        Top = cy - ActualHeight / 2;
+        Left = cx - VisualWidth / 2;
+        Top = cy - VisualHeight / 2;
         SnapCapsuleToNearestEdge(animated: true);
         Minimized?.Invoke();
     }
@@ -282,12 +296,12 @@ public sealed partial class Toolbar
         _capDragging = false;
         _capDownTick = 0;
         _capSource = 0;
-        double bx = Left + ActualWidth / 2, by = Top + ActualHeight / 2;
+        double bx = Left + VisualWidth / 2, by = Top + VisualHeight / 2;
         _capsuleRoot.Visibility = Visibility.Collapsed;
         _panelRoot.Visibility = Visibility.Visible;
         UpdateLayout();
-        Left = bx - ActualWidth / 2;
-        Top = by - ActualHeight / 2;
+        Left = bx - VisualWidth / 2;
+        Top = by - VisualHeight / 2;
         ClampToScreen();
         AnimationKit.PopOpen(_panelRoot);
         NotifyGeometryChanged();
@@ -297,7 +311,7 @@ public sealed partial class Toolbar
     private void SnapCapsuleToNearestEdge(bool animated)
     {
         var wa = ShowScreen.Bounds;
-        double w = Math.Max(ActualWidth, 52), h = Math.Max(ActualHeight, 52);
+        double w = Math.Max(VisualWidth, 48), h = Math.Max(VisualHeight, 48);
         double leftMin = _dockLaneConfigured ? _dockLaneLeft : wa.Left + 240;
         double leftMax = _dockLaneConfigured ? _dockLaneRight - w : wa.Right - 240 - w;
         if (leftMax < leftMin) { leftMin = wa.Left + 8; leftMax = Math.Max(leftMin, wa.Right - w - 8); }

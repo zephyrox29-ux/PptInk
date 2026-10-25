@@ -11,7 +11,7 @@ using PptInk.UI.Theme;
 
 namespace PptInk.UI;
 
-/// <summary>统一调度器 · 浮岛族与设置联动：工具栏/擦除浮岛/翻页岛/分割副岛的创建与重排、页码徽标轮询、设置项实时生效（布局/副岛/翻页笔/单手书写）。（v0.9.2 拆分，纯搬运）</summary>
+/// <summary>统一调度器 · 浮岛族与设置联动：工具栏/擦除浮岛/翻页岛/跳页浮层的创建与重排、页码徽标轮询、设置项实时生效（布局/翻页笔/单手书写）。（v0.9.2 拆分，纯搬运）</summary>
 public sealed partial class UiOrchestrator
 {
     private void WireToolbar()
@@ -26,8 +26,6 @@ public sealed partial class UiOrchestrator
         // 停顿即自动规整，再点一下等于重复触发）；现改为 AI Power 开关（开/关本地推理），
         // 与设置中心「AI 形状规整」同一状态源，两侧视觉实时同步。
         _toolbar.ShapeAssistRequested += ToggleAiPower;
-        // v0.7.0 可分割：分割缝拉出 / 副岛合并 → 重建副岛
-        _toolbar.SplitChanged += () => RebuildSegment();
         // 长按手柄收纳（v0.2.0）：工具栏自身收缩为屏上胶囊球（可拖动、吸附边缘、
         // 点按展开）——绝不能收进托盘（放映中托盘被全屏放映盖住，用户无法恢复）。
         // 编排器只负责让位弹出物：贴边画笔小球收起、擦除浮岛/气泡退场。
@@ -52,7 +50,6 @@ public sealed partial class UiOrchestrator
         // v0.5.0：画笔/荧光笔的再次点按已内联为工具栏 TogglePalette（面板与按钮同窗口渲染），
         // 编排器不再中转调色弹出 —— 少一跳事件、少一个窗口、z 序天然正确。
     }
-
     private void WireEraseIsland()
     {
         if (_eraseIsland is null) return;
@@ -69,12 +66,18 @@ public sealed partial class UiOrchestrator
     {
         bool viaCom = forward ? _svc.PptController.NextSlide() : _svc.PptController.PrevSlide();
         if (viaCom)
+        {
+            _svc.Log.Info($"翻页按钮（{(forward ? "下一页" : "上一页")}）：COM 成功");   // v1.1.1 取证日志
             _ = PollPageBadgeAsync();          // COM 成功：立即读权威页码（不等 2s 轮询）
+        }
         else
+        {
+            _svc.Log.Info($"翻页按钮（{(forward ? "下一页" : "上一页")}）：COM 不可用，走兜底推算");   // v1.1.1 取证日志
             _svc.Detector.NotifyManualAdvance(forward); // 兜底通道页码推算
+        }
     }
 
-    // ———————— v0.7.0 灵动岛家族（翻页岛 / 分割副岛） ————————
+    // ———————— v0.7.0 灵动岛家族（翻页岛） ————————
 
     /// <summary>页码分发：角落翻页岛 ×2 联动（主工具栏翻页组已移除）。</summary>
     private void UpdatePageIslands(int current, int total)
@@ -96,6 +99,7 @@ public sealed partial class UiOrchestrator
             _pageIslandR = new PageTurnIsland(_svc, "R");
             _pageIslandR.PrevRequested += () => AdvanceSlide(forward: false);
             _pageIslandR.NextRequested += () => AdvanceSlide(forward: true);
+            _pageIslandR.PageBadgeRequested += anchor => ShowPageJump(anchor);
         }
         if (_overlay is not null && _pageIslandR.Stage is null)
             _overlay.AddToLayer(StageLayer.Ui, _pageIslandR, 0, 0);
@@ -105,6 +109,7 @@ public sealed partial class UiOrchestrator
             _pageIslandL = new PageTurnIsland(_svc, "L");
             _pageIslandL.PrevRequested += () => AdvanceSlide(forward: false);
             _pageIslandL.NextRequested += () => AdvanceSlide(forward: true);
+            _pageIslandL.PageBadgeRequested += anchor => ShowPageJump(anchor);
         }
         if (_overlay is not null && _pageIslandL.Stage is null)
             _overlay.AddToLayer(StageLayer.Ui, _pageIslandL, 0, 0);
@@ -114,58 +119,34 @@ public sealed partial class UiOrchestrator
         RefreshIdleFade();
     }
 
-    /// <summary>
-    /// 重建分割副岛（SplitChanged 触发）：分割态 → 按主栏右侧 12px（或记忆位）创建/更新；
-    /// 合并态 → 关闭旧岛。主栏与副岛按钮同走 ToolbarFactory（视觉/点击即有零割裂）。
-    /// v0.9.7 自愈：分割点后无可见元素（撤销/AI/插件被旧配置全隐藏）时，自动清除
-    /// 失效分割标记并重建主栏 —— 避免「主栏只剩 4 个按钮、副岛也不存在」的黑洞状态。
-    /// </summary>
-    private void RebuildSegment()
-    {
-        if (_toolbar is not { } tb) return;
-        var old = _segment;
-        _segment = null;
-        old?.Close();   // 直接关闭：视觉焦点在主栏宽度变化上，副岛静默退场不抢戏
-        if (tb is not { IsSplit: true }) return;
+    // ———————— v1.1.2 页码快捷跳页 ————————
 
-        var items = tb.SplitSegmentItems();
-        if (items.Count == 0)
+    private void EnsurePageJumpPanel()
+    {
+        if (_pageJump is not null) return;
+        _pageJump = new PageJumpPanel(_svc);
+        _pageJump.PageRequested += page =>
         {
-            // v0.9.7 自愈：分割失效 → 清除标记 + 重建主栏（Ops 组回家），
-            // 配置保存后下次启动不再复现；Toast 提示用户（说明而非静默改配置）。
-            _svc.Config.ToolbarSplitAfterId = null;
-            _svc.Config.Save();
-            tb.RebuildLayout();
-            tb.SelectTool(_svc.InkEngine.Tool);
-            Toast.Show("分割失效，已还原：撤销/重做/AI/插件回到主工具栏。");
-            return;
-        }
-        _segment = new SegmentIsland(_svc, items, OnSegmentCommand, () => _toolbar?.GetPanelRect());
-        _segment.MergeRequested += () => _toolbar?.MergeOpsBack();   // → SplitChanged → 本方法关闭本岛
-        _overlay?.AddToLayer(StageLayer.Ui, _segment, 0, 0);   // 舞台元素：即建即挂
-        _segment.PlaceInitial(tb.Left + tb.ActualWidth + 12, tb.Top);
-        if (tb.IsVisible)
-        {
-            // Set its fixed row before the first visible frame; no free-position flash next to the toolbar.
-            ArrangeChromeSlots();
-            _segment.ShowAnimated();
-        }
-        else ScheduleChromeLayout();
+            bool ok = _svc.PptController.GotoSlide(page);
+            if (ok)
+            {
+                _svc.Log.Info($"快捷跳页：第 {page} 页（COM）");
+                _ = PollPageBadgeAsync();
+            }
+            else
+            {
+                Toast.Show("跳页需要 PowerPoint/WPS 放映支持（兜底按键通道无法指定页码）。");
+            }
+        };
+        _overlay?.AddToLayer(StageLayer.Ui, _pageJump, 0, 0);
     }
 
-    /// <summary>副岛命令分发（与主工具栏同一条真相：undo/redo/ai/plugin/exit）。</summary>
-    private void OnSegmentCommand(string id)
+    /// <summary>弹出页码选择浮层（翻页岛页码胶囊点按）。总页数取状态机会话（COM 权威值）。</summary>
+    private void ShowPageJump(Rect anchor)
     {
-        switch (id)
-        {
-            case "undo": _svc.InkEngine.Undo(); break;
-            case "redo": _svc.InkEngine.Redo(); break;
-            case "plugin": _svc.Plugins.ToggleQuickPanel(); break;
-            case "nav.exit": _svc.PptController.ExitShow(); break;
-            case "ai":
-                ToggleAiPower();   // v0.9.2：按钮语义 = AI Power 开关（原先"识别一次"没有实际价值）
-                break;
-        }
+        EnsurePageJumpPanel();
+        var total = _svc.StateMachine.Session?.TotalSlides ?? 0;
+        _pageJump?.ShowFor(anchor, total);
     }
 
     /// <summary>读 COM 权威页码并刷新徽标（值变化才刷）。COM 读取放后台线程，不卡 UI。</summary>

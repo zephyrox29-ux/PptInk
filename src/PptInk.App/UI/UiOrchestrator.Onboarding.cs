@@ -84,7 +84,8 @@ public sealed partial class UiOrchestrator
 
     /// <summary>
     /// 启动新手引导。force=true（托盘「立即播放」）无视勾选；否则要求「新手引导」处于勾选状态。
-    /// S0 时先唤起 UI 再引导（未放映也能走一遍流程）。
+    /// S0 时先唤起 UI 再引导（未放映也能走一遍流程）。v1.1.2：S0 触发的会话记录标记 ——
+    /// 引导结束后收回桌面 UI（原先工具栏/HUD 留在桌面上，S0 没有「结束放映」按钮可退）。
     /// </summary>
     public void StartOnboarding(bool force = false)
     {
@@ -97,10 +98,30 @@ public sealed partial class UiOrchestrator
                 ShowChrome();
                 _overlayWanted = true;   // v0.8.2：S0 唤起引导 = 墨迹层激活态
                 _overlay?.ActivateStage();
+                _watchdog.Start();
+                _s0GuideSession = true;
             }
             _onboardingDoneThisRun = true;
             SwitchToTouchForOnboarding();   // 引导即实操：自动切触摸模式（点洞内按钮/现场翻页）
             _onboarding.Start(OnboardingCatalog.BuildDefault(this));
+        });
+    }
+
+    /// <summary>v1.1.2：托盘手动触发的引导（S0 桌面会话）结束后收回唤起的 UI ——
+    /// 桌面上没有放映，工具栏留着既挡内容又没有退出按钮。S1 放映会话不受影响。</summary>
+    private void EndS0GuideSession()
+    {
+        if (!_s0GuideSession) return;
+        _s0GuideSession = false;
+        if (_svc.StateMachine.Phase != AppPhase.S0Background) return;
+        _app.Dispatcher.Invoke(() =>
+        {
+            RestoreToolAfterOnboarding();
+            HideChrome();
+            _overlayWanted = false;
+            _overlay?.DeactivateStage();
+            _watchdog.Stop();
+            _wdStuckCount = 0;
         });
     }
 

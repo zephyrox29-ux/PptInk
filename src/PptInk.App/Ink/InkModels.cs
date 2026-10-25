@@ -390,14 +390,24 @@ public sealed class StrokeData
 
     #region 命中检测（抹除/圈除）
 
-    /// <summary>抹除命中：橡皮圆心沿路径滑动，任一线段进入半径即命中（滑过即擦）。</summary>
+    /// <summary>抹除命中：橡皮圆心沿路径滑动，任一线段进入半径即命中（滑过即擦）。
+    /// v1.1.2 修复：单点笔迹（轻点留下的墨点）原先永远不进线段循环，涂抹擦除对它
+    /// 完全失效 —— 「莫名其妙的残留红点擦不掉」的根因。点按点距判定。</summary>
     public bool HitByErasePath(IEnumerable<Point> eraserPath, double radiusPx)
     {
         if (Points.Count == 0) return false;
         foreach (var e in eraserPath)
+        {
+            if (Points.Count == 1)
+            {
+                double dx = e.X - Points[0].X, dy = e.Y - Points[0].Y;
+                if (dx * dx + dy * dy <= radiusPx * radiusPx) return true;
+                continue;
+            }
             for (int i = 1; i < Points.Count; i++)
                 if (DistancePointToSegment(e, (Points[i - 1].X, Points[i - 1].Y), (Points[i].X, Points[i].Y)) <= radiusPx)
                     return true;
+        }
         return false;
     }
 

@@ -200,6 +200,11 @@ internal sealed class SpotlightElement : StageElement
         var overlay = new Border
         {
             Background = new SolidColorBrush(Color.FromArgb(0xC0, 0x08, 0x0A, 0x10)),
+            // v1.1.1 修复：无子无尺寸的 Border 在 Canvas 里 DesiredSize 为 0×0，
+            // 暗罩从未渲染、「点暗区退出」也因 Canvas 无 Background 不参与命中 ——
+            // 聚光灯只剩一个可拖圆环。显式铺满修复暗罩；命中由 canvas 的透明底承担。
+            Width = _w,
+            Height = _h,
         };
         RebuildMask();
         overlay.OpacityMask = new DrawingBrush(_maskGroup) { Stretch = Stretch.None };
@@ -214,7 +219,11 @@ internal sealed class SpotlightElement : StageElement
         Canvas.SetLeft(hole, _center.X - Radius);
         Canvas.SetTop(hole, _center.Y - Radius);
 
-        var canvas = new Canvas();
+        var canvas = new Canvas
+        {
+            // 透明背景参与命中：暗区 MouseDown/TouchDown/StylusDown 才能收到「点暗区退出」。
+            Background = Brushes.Transparent,
+        };
         canvas.Children.Add(overlay);
         canvas.Children.Add(hole);
 

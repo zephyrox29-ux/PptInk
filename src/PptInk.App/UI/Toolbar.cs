@@ -59,7 +59,7 @@ public sealed partial class Toolbar : StageElement
 
     internal double DockLaneLeft => _dockLaneConfigured ? _dockLaneLeft : ShowScreen.Bounds.Left + 240;
     internal double DockLaneRight => _dockLaneConfigured ? _dockLaneRight : ShowScreen.Bounds.Right - 240;
-    internal double DockBottom => _dockLaneConfigured ? _dockBottom : ShowScreen.Bounds.Bottom - (_svc.Config.RespectGestureZone ? 64 : 16);
+    internal double DockBottom => _dockLaneConfigured ? _dockBottom : ShowScreen.Bounds.Bottom - (_svc.Config.RespectGestureZone ? 48 : 8);
 
     /// <summary>Left/Top 包装（屏幕 DIP，与旧 Window.Left/Top 同语义）——原 1032 行窗口
     /// 逻辑的坐标读写零迁移；动画走 ScreenLeftProperty/ScreenTopProperty（包装是 CLR 属性）。</summary>
@@ -85,12 +85,6 @@ public sealed partial class Toolbar : StageElement
     public event Action? GeometryChanged;
 
     internal void NotifyGeometryChanged() => GeometryChanged?.Invoke();
-
-    /// <summary>分割状态变化（分割/合并后触发）：编排器据此重建副岛（副岛初始位 = 主栏右侧 12px）。</summary>
-    public event Action? SplitChanged;
-
-    /// <summary>当前是否处于分割态（Ops 段在副岛）。</summary>
-    public bool IsSplit => _svc.Config.ToolbarSplitAfterId is not null;
 
     public Toolbar(AppServices svc)
     {
@@ -148,6 +142,35 @@ public sealed partial class Toolbar : StageElement
         LayoutTransform = Math.Abs(s - 1.0) < 0.01 ? null : new System.Windows.Media.ScaleTransform(s, s);
     }
 
+    /// <summary>当前缩放系数（ApplyScale 同口径；无变换 = 1）。</summary>
+    internal double ScaleFactor =>
+        LayoutTransform is System.Windows.Media.ScaleTransform st ? st.ScaleX : 1.0;
+
+    // v1.1.1 尺寸口径统一：实测（0.7/1.6 档验证）LayoutTransform 下 ActualWidth/RenderSize
+    // 是变换前尺寸，DesiredSize 才是父坐标（视觉）尺寸。停靠钳制、胶囊中心、屏幕钳制
+    // 全部改用视觉口径 —— 原混用让 160% 档视觉越出中央槽、70% 档底边悬空。
+    // DesiredSize 需要至少一次布局才有效；未布局（构造早期）按 ActualWidth×scale 推算。
+
+    /// <summary>视觉（缩放后）宽度，屏幕坐标系。</summary>
+    internal double VisualWidth
+    {
+        get
+        {
+            double d = DesiredSize.Width;
+            return double.IsFinite(d) && d > 0 ? d : Math.Max(1, ActualWidth * ScaleFactor);
+        }
+    }
+
+    /// <summary>视觉（缩放后）高度，屏幕坐标系（画笔面板展开时含面板行）。</summary>
+    internal double VisualHeight
+    {
+        get
+        {
+            double d = DesiredSize.Height;
+            return double.IsFinite(d) && d > 0 ? d : Math.Max(1, ActualHeight * ScaleFactor);
+        }
+    }
+
     /// <summary>设置中心改完缩放后刷新（重建并重新定位，避免缩放后出屏）。</summary>
     public void RefreshScale()
     {
@@ -197,29 +220,29 @@ public sealed partial class Toolbar : StageElement
         {
             Child = _toolScroller,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(20),
-            Padding = new Thickness(8, 6, 8, 6),
+            CornerRadius = new CornerRadius(18),
+            Padding = new Thickness(6, 4, 6, 4),
         };
         _panelRoot.SetResourceReference(Border.BackgroundProperty, "PanelBrush");
         _panelRoot.SetResourceReference(Border.BorderBrushProperty, "PanelBorderBrush");
         _panelRoot.SetResourceReference(Border.EffectProperty, "ShadowChrome");
 
-        // 收纳胶囊（长按手柄后）：52px 圆球，可拖动、松手吸附最近屏幕边缘、点按展开
+        // 收纳胶囊（长按手柄后）：48px 圆球，可拖动、松手吸附最近屏幕边缘、点按展开
         _capsuleRoot = new Border
         {
             Visibility = Visibility.Collapsed,
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(26),
-            Width = 52,
-            Height = 52,
+            CornerRadius = new CornerRadius(24),
+            Width = 48,
+            Height = 48,
             Cursor = Cursors.Hand,
             ToolTip = "点一下展开。可在底部中央左右移动，不会挡翻页按钮",
             Child = new Path
             {
                 Style = (Style)Application.Current.FindResource("IconFill"),
                 Data = (Geometry)Application.Current.FindResource("IconPen"),
-                Width = 22,
-                Height = 22,
+                Width = 20,
+                Height = 20,
                 IsHitTestVisible = false,
             },
         };

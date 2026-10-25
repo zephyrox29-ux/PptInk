@@ -125,7 +125,9 @@ public sealed class OnboardingGuideElement : StageElement
 
     /// <summary>元素几何对位放映屏：遮罩只盖放映屏（引导是给放映中的老师看的）。
     /// Start/Resume + 舞台 DpiChanged/ScreenChanged 时重跑，幂等。public：
-    /// 编排器在放映屏变化重对位时调用（原独立窗口 DpiChanged 的等价承接）。</summary>
+    /// 编排器在放映屏变化重对位时调用（原独立窗口 DpiChanged 的等价承接）。
+    /// v1.1.1：换屏时当前步骤的挖洞/高亮/卡片仍指向旧屏位置 —— 几何重设后重渲染
+    /// 当前步骤（可见时），引导不因换屏而指错地方。</summary>
     public void RelocateToScreen()
     {
         var b = Core.ShowScreen.Bounds;
@@ -133,6 +135,8 @@ public sealed class OnboardingGuideElement : StageElement
         ScreenTop = b.Top;
         Width = b.Width;
         Height = b.Height;
+        if (_isActive && IsVisible && _steps is not null && _index >= 0 && _index < _steps.Count)
+            RenderStep();
     }
 
     public void Start(IReadOnlyList<OnboardingStep> steps)
@@ -173,12 +177,15 @@ public sealed class OnboardingGuideElement : StageElement
         _advance.Start();
     }
 
-    /// <summary>会话结束强制终止（S0）。</summary>
+    /// <summary>会话结束强制终止（S0）。v1.1.2：必须归还模态租约 —— Start 的 EnterModal
+    /// 若不配对 ExitModal，租约永久滞留，此后插件/擦除/画笔/聚光灯全部静默失效
+    /// （AllocateUtilityPanel/AllocatePopover 在模态占用下一律拒绝，「插件按钮没作用」根因）。</summary>
     public void Stop()
     {
         if (!_isActive && !IsVisible) return;
         _advance.Stop();
         _isActive = false;
+        StageUiLayout.ExitModal(this);
         Visibility = Visibility.Collapsed;
     }
 
@@ -188,6 +195,7 @@ public sealed class OnboardingGuideElement : StageElement
         if (!_isActive) return;
         _advance.Stop();
         _isActive = false;
+        StageUiLayout.ExitModal(this);
         var fade = Fade(Opacity, 0, 170, EaseIn.Power3);
         fade.Completed += (_, _) => Visibility = Visibility.Collapsed;
         BeginAnimation(OpacityProperty, fade);
@@ -209,6 +217,7 @@ public sealed class OnboardingGuideElement : StageElement
     {
         _advance.Stop();
         _isActive = false;
+        StageUiLayout.ExitModal(this);   // 与 Start 的 EnterModal 配对（租约泄漏 = 全部浮层静默失效）
         var fade = Fade(Opacity, 0, 200, EaseIn.Power3);
         fade.Completed += (_, _) => Visibility = Visibility.Collapsed;
         BeginAnimation(OpacityProperty, fade);

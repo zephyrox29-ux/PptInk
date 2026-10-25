@@ -84,10 +84,10 @@
          灵动岛家族视觉零割裂）
          ============================================================ -->
 
-    <!-- 工具按钮：56px 触控目标，圆角 14；只提供按压反馈，不依赖鼠标悬停 -->
+    <!-- 工具按钮：48px 触控目标（v1.1.2 收窄浮窗占屏，仍 ≥44px 合规下限），圆角 12；只提供按压反馈，不依赖鼠标悬停 -->
     <Style x:Key="ToolButtonStyle" TargetType="Button">
-        <Setter Property="Width" Value="56"/>
-        <Setter Property="Height" Value="56"/>
+        <Setter Property="Width" Value="48"/>
+        <Setter Property="Height" Value="48"/>
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="Cursor" Value="Hand"/>
@@ -98,8 +98,8 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="bd" CornerRadius="14" Background="{TemplateBinding Background}"
-                            Margin="2" Padding="10">
+                    <Border x:Name="bd" CornerRadius="12" Background="{TemplateBinding Background}"
+                            Margin="2" Padding="8">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
@@ -116,8 +116,8 @@
     <Style x:Key="IconFill" TargetType="Path">
         <Setter Property="Fill" Value="{DynamicResource TextPrimaryBrush}"/>
         <Setter Property="Stretch" Value="Uniform"/>
-        <Setter Property="Width" Value="24"/>
-        <Setter Property="Height" Value="24"/>
+        <Setter Property="Width" Value="21"/>
+        <Setter Property="Height" Value="21"/>
     </Style>
 
     <!-- 组间分隔线：1px 发丝 -->

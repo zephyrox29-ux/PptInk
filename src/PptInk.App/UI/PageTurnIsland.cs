@@ -13,14 +13,17 @@ namespace PptInk.UI;
 /// 上一页 / 页码 / 下一页 的独立迷你岛。
 ///  - 固定两份：右下角 + 左下角；不绑定拖动手势，也不保存可移动位置；
 ///  - 「点击即有」：‹ › 按下瞬间翻页（PressWire），微滑不丢点；
-///  - 页码胶囊只显示页码与进度，不参与手势拖动；
+///  - 页码胶囊显示页码与进度；v1.1.2 起点按胶囊弹出快捷跳页浮层；
 ///  - 翻页动作走编排器 AdvanceSlide（COM 直翻 + 兜底推算，与翻页笔同一条真相）；
-///  - 退出放映不设在此处（低频高危操作，在主工具栏/副岛，防误触中断课堂）。
+///  - 退出放映不设在此处（低频高危操作，在主工具栏，防误触中断课堂）。
 /// </summary>
 public sealed class PageTurnIsland : StageElement
 {
     public event Action? PrevRequested;
     public event Action? NextRequested;
+
+    /// <summary>页码胶囊被点按（v1.1.2）：编排器弹出页码快捷选择浮层。参数 = 本岛屏幕矩形锚点。</summary>
+    public event Action<Rect>? PageBadgeRequested;
 
     /// <summary>角标："R" 固定右下 / "L" 固定左下。</summary>
     public string Anchor { get; }
@@ -56,7 +59,8 @@ public sealed class PageTurnIsland : StageElement
         var next = ToolbarFactory.BuildSimple(ToolbarFactory.Icon("IconNext"), "下一页",
             () => NextRequested?.Invoke());
 
-        // 页码胶囊：只显示数字 + 底部 3px 进度条，不承接拖动
+        // 页码胶囊：显示数字 + 底部进度条；v1.1.2 起可点按 → 弹出快捷跳页浮层。
+        // PressWire 点击即有（与翻页按钮同纪律）；透明背景参与命中。
         _pageText = new TextBlock
         {
             Text = "– / –",
@@ -72,16 +76,24 @@ public sealed class PageTurnIsland : StageElement
         var track = new Border { Height = 3, CornerRadius = new CornerRadius(1.5), Child = _pageFill, Margin = new Thickness(4, 0, 4, 0) };
         track.SetResourceReference(Border.BackgroundProperty, "ItemHoverBrush");
 
-        var pill = new Grid { Width = 92 };
+        var pill = new Grid { Width = 84 };
         pill.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         pill.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         Grid.SetRow(_pageText, 0);
         pill.Children.Add(_pageText);
         Grid.SetRow(track, 1);
         pill.Children.Add(track);
-        // 纯显示容器：不注册鼠标/触摸/笔拖动处理器。
         _pagePill.Background = Brushes.Transparent;
         _pagePill.Child = pill;
+        _pagePill.Cursor = Cursors.Hand;
+        _pagePill.ToolTip = "点按选择页码";
+        Stylus.SetIsPressAndHoldEnabled(_pagePill, false);
+        Stylus.SetIsFlicksEnabled(_pagePill, false);
+        ToolbarFactory.PressWire(_pagePill, () =>
+        {
+            var r = GetIslandRect();
+            if (r is { } rect) PageBadgeRequested?.Invoke(rect);
+        });
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         row.Children.Add(prev);
@@ -91,9 +103,9 @@ public sealed class PageTurnIsland : StageElement
         _chromeBody = new Border
         {
             Child = row,
-            CornerRadius = new CornerRadius(32),
+            CornerRadius = new CornerRadius(26),
             BorderThickness = new Thickness(1),
-            Padding = new Thickness(6, 4, 6, 4),
+            Padding = new Thickness(5, 3, 5, 3),
         };
         _chromeBody.SetResourceReference(Border.BackgroundProperty, "PanelBrush");
         _chromeBody.SetResourceReference(Border.BorderBrushProperty, "PanelBorderBrush");
@@ -132,8 +144,8 @@ public sealed class PageTurnIsland : StageElement
         double frac = total > 0 ? Math.Clamp((double)current / total, 0, 1) : 0;
         if (_pageFill is not null)
         {
-            // 满宽 84 = 胶囊 92 − track 左右 Margin 4×2（100% 时进度条恰好填满轨道）
-            var a = new DoubleAnimation(_pageFill.Width, 84 * frac, AnimationKit.Fast)
+            // 满宽 76 = 胶囊 84 − track 左右 Margin 4×2（100% 时进度条恰好填满轨道）
+            var a = new DoubleAnimation(_pageFill.Width, 76 * frac, AnimationKit.Fast)
             { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } };
             _pageFill.BeginAnimation(Rectangle.WidthProperty, a);
         }
@@ -186,7 +198,7 @@ public sealed class PageTurnIsland : StageElement
         var wa = ShowScreen.Bounds;
         double w = Math.Max(ActualWidth, Content is FrameworkElement f ? MeasuredWidth(f) : 220);
         double h = Math.Max(ActualHeight, Content is FrameworkElement f2 ? MeasuredHeight(f2) : 64);
-        double bottom = wa.Bottom - h - (AppConfig.Current.RespectGestureZone ? 64 : 16);
+        double bottom = wa.Bottom - h - (AppConfig.Current.RespectGestureZone ? 48 : 8);
         ScreenLeft = Anchor == "R" ? wa.Right - w - 16 : wa.Left + 16;
         ScreenTop = bottom;
 

@@ -133,7 +133,19 @@ public sealed class PythonBridge : IDisposable
             var readTask = _stdout.ReadLineAsync();
             WaitHandshakeOrDispose(readTask);
             var hello = readTask.Result;
-            if (hello is null || !hello.Contains("ok"))
+            // v1.1.1：结构化校验取代 Contains("ok") —— 子进程向 stdout 打印的任何含 "ok"
+            // 的告警/告错文本（如 "broken pipe" 之类）都会被旧判据当成握手成功。
+            bool handshakeOk = false;
+            try
+            {
+                if (hello is not null)
+                {
+                    var doc = JsonSerializer.Deserialize<JsonElement>(hello);
+                    handshakeOk = doc.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True;
+                }
+            }
+            catch (JsonException) { handshakeOk = false; }
+            if (!handshakeOk)
                 throw new IOException("AI 桥握手协议异常");
         }
         catch
@@ -163,8 +175,10 @@ public sealed class PythonBridge : IDisposable
     /// <summary>
     /// 独立健康检查：不改变 AI 开关、不接管正式常驻进程，启动短命桥进程并执行一次合成圆形识别。
     /// 这样用户即使暂时关闭 AI，也可验证 Python/NumPy/桥协议/识别算法能否完整工作。
+    /// confirmNetwork（v1.1.1）：联网下载/装包前的授权回调（拒绝则不联网），见 AiProvisioner。
     /// </summary>
-    public async Task<string> CheckHealthAsync(CancellationToken cancellationToken = default, IProgress<string>? progress = null)
+    public async Task<string> CheckHealthAsync(CancellationToken cancellationToken = default, IProgress<string>? progress = null,
+        Func<string, Task<bool>>? confirmNetwork = null)
     {
         var dir = BridgeDir;
         var script = Path.Combine(dir, "ink_bridge.py");
@@ -172,12 +186,12 @@ public sealed class PythonBridge : IDisposable
             return $"AI 检测失败：找不到桥接脚本。{Environment.NewLine}预期位置：{script}{Environment.NewLine}请重新生成包含 bridge 目录的完整便携包。";
 
         progress?.Report("正在检测运行环境……");
-        // v1.0.0：先检测一次；失败则自动配置运行环境（补 NumPy / 下载嵌入式 Python），再复检一次。
+        // v1.0.0：先检测一次；失败则自动配置运行环境（v1.1.1 起联网下载需用户确认），再复检一次。
         var first = await ProbeAsync(dir, script, cancellationToken);
         if (first.Ok) return first.Message;
 
         progress?.Report("环境不完整，自动配置中……");
-        var provision = await AiProvisioner.EnsureAsync(dir, progress, cancellationToken);
+        var provision = await AiProvisioner.EnsureAsync(dir, progress, cancellationToken, confirmNetwork);
         if (!provision.Ok)
             return first.Message + Environment.NewLine + Environment.NewLine +
                    "自动配置未能修复：" + provision.Message;

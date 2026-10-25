@@ -30,8 +30,9 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     private DebugHudElement? _debugHud;                    // v0.4.0 调试模式诊断面板；v0.9.0 舞台 Hud 层元素
     private PageTurnIsland? _pageIslandR;            // v0.7.0 角落翻页岛（右下）；v0.9.0 舞台元素
     private PageTurnIsland? _pageIslandL;            // v0.7.0 角落翻页岛（左下）；v0.9.0 舞台元素
-    private SegmentIsland? _segment;                       // v0.7.0 可分割副岛（Ops 段拉出）
+    private PageJumpPanel? _pageJump;                // v1.1.2 页码快捷跳页浮层
     private bool _onboardingDoneThisRun;   // 一次运行内自动触发一次，避免反复打扰课堂
+    private bool _s0GuideSession;          // S0 托盘手动触发的引导会话：结束后收回桌面 UI
     private bool _chromeLayoutQueued;
 
     // —— AI 停顿自动规整调度（auto 即刻替换 / bubble 气泡确认） ——
@@ -141,6 +142,10 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     private void RelocateAllToScreen()
     {
         if (_svc.StateMachine.Phase != Core.AppPhase.S1Active) return;
+        // v1.1.1：换屏前先收回弹出型浮层 —— 擦除浮岛/插件面板的锚点是旧屏坐标，换屏后
+        // 会被钳到新屏边缘而非跟随触发按钮；弹出态本来就该一次交互一续期，直接收掉最稳。
+        HideAllPopovers();
+        _overlay?.RetractFloatingPanelsOnScreenChange();
         _overlay?.RelocateToScreen();
         _debugHud?.PositionTopLeft();   // v0.4.0：诊断面板跟随放映屏重对位（public 方法复用）
         _onboarding?.RelocateToScreen();   // v0.9.0：引导覆盖跟随放映屏重对位（幂等；全屏尺寸重设）
@@ -154,7 +159,6 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         // v0.7.0：灵动岛家族重对位（记忆位置可能在旧屏 → 钳制回放映屏；越界回默认位）
         _pageIslandR?.RestorePosition();
         _pageIslandL?.RestorePosition();
-        _segment?.RelocateIntoScreen();
         ArrangeChromeSlots();
         ScheduleChromeLayout();
     }
@@ -228,11 +232,14 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
                 _onboarding.Completed += RestoreToolAfterOnboarding;
                 _onboarding.Dismissed += RestoreToolAfterOnboarding;
                 _onboarding.OptedOut += RestoreToolAfterOnboarding;
+                // v1.1.2：S0 桌面引导会话结束 → 收回唤起的 UI（工具栏不再滞留桌面无法退出）
+                _onboarding.Completed += EndS0GuideSession;
+                _onboarding.Dismissed += EndS0GuideSession;
+                _onboarding.OptedOut += EndS0GuideSession;
             }
-            // v0.7.0：角落翻页岛（右下/左下）预创建；分割态副岛按持久化配置重建
+            // v0.7.0：角落翻页岛（右下/左下）预创建；页码快捷跳页浮层预创建
             EnsurePageIslands();
-            if (_toolbar is { IsSplit: true } && _segment is null)
-                RebuildSegment();
+            EnsurePageJumpPanel();
         });
     }
 
@@ -420,6 +427,30 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     /// <summary>工具栏缩放变更（设置中心调用）。</summary>
     public void RefreshToolbarScale() => _toolbar?.RefreshScale();
 
+    /// <summary>影响底部槽位的设置项（手势区避让等）变更后立即重排一次（v1.1.1：
+    /// 原先只写配置，工具栏/翻页岛要等下次显隐或几何变化才挪位，设置看似无效）。</summary>
+    public void RefreshChromeLayout() => ScheduleChromeLayout();
+
+    /// <summary>导出诊断包（v1.1.1 真机验收配套）：环境快照 + 配置 + 最近日志打 zip，
+    /// 不含板书与截图。IO 放后台线程，结果 Toast 告知路径。</summary>
+    public void ExportDiagnostics()
+    {
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                string zip = Core.DiagnosticsExporter.Export();
+                _svc.Log.Info($"诊断包已导出：{zip}");
+                _app.Dispatcher.BeginInvoke(() => Toast.Show($"诊断包已导出：{zip}"));
+            }
+            catch (Exception ex)
+            {
+                _svc.Log.Error(ex, "诊断包导出失败");
+                _app.Dispatcher.BeginInvoke(() => Toast.Show("诊断包导出失败，详见日志。"));
+            }
+        });
+    }
+
     /// <summary>v0.9.9：闲置淡出设置应用到工具栏与左右翻页岛（同一套开关/时间/透明度，
     /// 三个元素观感一致 —— 用户期望翻页岛与工具栏有相同的闲置半透明能力）。
     /// 创建时与设置变更时各调一次。</summary>
@@ -443,8 +474,20 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
                     _assistSessionOff = false;   // 新放映会话：气泡「本次放映不再提示」重新生效
                     // 换课件检测（v1.1.0）：身份变化时存档并清空旧课件批注，防串页。
                     // 身份读取失败（兜底通道/WPS）时引擎不动，保持既有行为。
+                    // v1.1.1：自动导出默认关闭 —— 换课件丢弃旧板书时提醒留存，避免
+                    // 「以为有自动备份，实际退出即清」的静默数据丢失。
                     if (_svc.PptController.TryGetPresentationIdentity(out var deckId))
-                        _svc.InkEngine.BeginPresentationSession(deckId);
+                    {
+                        bool discardedInk = _svc.InkEngine.BeginPresentationSession(deckId);
+                        if (discardedInk && !_svc.Config.AutoExportOnExit)
+                            Toast.Show("已切换课件：旧板书已清空（自动导出未开启，需要留存请在退出前用托盘「导出板书」）。");
+                    }
+                    // v1.1.1：首帧前同步刷新目标屏 —— 原先只有 500ms 页码轮询更新 ShowScreen，
+                    // 首帧工具栏/浮岛按旧屏（常为主屏）出现，探测完成后整套 UI 再跳一次屏
+                    //（「浮窗先出现在错误屏幕再乱跳」）。FindSlideShowWindow 纯 EnumWindows
+                    // 无 COM 风险；COM 路径的精确定位仍由页码轮询兜底。
+                    if (Ppt.PptController.FindSlideShowWindow() is { } showHwnd)
+                        ShowScreen.UpdateFromShowWindow(showHwnd);
                     ShowChrome();
                     _overlayWanted = true;        // v0.8.2：切档重建后据此恢复激活态
                     _overlay?.ActivateStage();
@@ -477,6 +520,9 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
                     _pagePoll.Stop();
                     _watchdog.Stop();           // 全套 UI 已收回，看门狗无守卫对象
                     _wdStuckCount = 0;
+                    // v1.1.1：退场显式复位主屏 —— ShowScreen 停留在上一块放映屏时，托盘
+                    // 唤起的设置窗/Toast/HUD 会出现在可能已关闭的投影屏上（「设置像没打开」）。
+                    ShowScreen.ResetToPrimary();
                     break;
             }
         });
@@ -487,6 +533,12 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     {
         _app.Dispatcher.Invoke(() =>
         {
+            // v1.1.1：手动唤起也刷新一次目标屏 —— 可能有放映在兜底通道下进行（COM 未绑定），
+            // 或上一场把 ShowScreen 留在了已关闭的投影屏。
+            if (Ppt.PptController.FindSlideShowWindow() is { } manualHwnd)
+                ShowScreen.UpdateFromShowWindow(manualHwnd);
+            else
+                ShowScreen.ResetToPrimary();
             ShowChrome();
             _overlayWanted = true;       // v0.8.2：手动唤起同为期望激活态
             _overlay?.ActivateStage();
@@ -559,7 +611,6 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         _toolbar?.ShowAnimated(fromBottomEdge: !double.IsFinite(_svc.Config.ToolbarDockY));
         if (_pageIslandR is { } r) { r.RestorePosition(); r.ShowAnimated(); }
         if (_pageIslandL is { } l) { l.RestorePosition(); l.ShowAnimated(); }
-        if (_segment is { } seg && !seg.IsVisible) seg.ShowAnimated();
         ScheduleChromeLayout();
     }
 
@@ -586,7 +637,7 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         tb.Measure(new Size(wa.Width, wa.Height));
         tb.UpdateLayout();
 
-        double safeBottom = _svc.Config.RespectGestureZone ? 64 : 16;
+        double safeBottom = _svc.Config.RespectGestureZone ? 48 : 8;
         double dockBottom = wa.Bottom - safeBottom;
 
         // Reserve the center width first; corner islands are then assigned disjoint left/right
@@ -621,18 +672,7 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         tb.SetDockLane(laneLeft, laneRight, dockBottom);
         tb.UpdateLayout();
 
-        if (_segment is { } seg)
-        {
-            seg.Measure(new Size(Math.Max(1, laneRight - laneLeft), wa.Height));
-            double sh = seg.ActualHeight > 1 ? seg.ActualHeight : seg.DesiredSize.Height;
-            if (!double.IsFinite(sh) || sh < 1) sh = 64;
-            // The segment owns a separate row immediately above the toolbar's entire bounding
-            // box (including the brush palette when expanded). Its own scroll viewer keeps its
-            // contents inside the center lane.
-            seg.SetChromeSlot(laneLeft, laneRight, tb.ScreenTop - sh - 12);
-        }
-
-        StageUiLayout.Configure(wa, laneLeft, laneRight, dockBottom, tb, _segment);
+        StageUiLayout.Configure(wa, laneLeft, laneRight, dockBottom, tb);
     }
 
     private void HideChrome()
@@ -640,9 +680,9 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         _toolbar?.HidePalette(immediate: true); // 隐藏舞台时直接复位同层面板，防止关闭动画抢后续位置
         _toolbar?.HideAnimated();
         _eraseIsland?.HideAnimated();   // 弹出型浮岛绝不赖屏
-        _pageIslandR?.HideAnimated();   // v0.7.0：翻页岛/副岛同步收回
+        _pageIslandR?.HideAnimated();   // v0.7.0：翻页岛同步收回
         _pageIslandL?.HideAnimated();
-        _segment?.HideAnimated();
+        _pageJump?.HideAnimated();
         if (_shapeBubble is { IsVisible: true }) _shapeBubble.HideAnimated();
         _overlay?.HideSilent();
     }
@@ -660,7 +700,7 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
             _debugHud?.Close();
             _pageIslandR?.Close();
             _pageIslandL?.Close();
-            _segment?.Close();
+            _pageJump?.Close();
             _onboarding?.Stop();
         });
     }

@@ -49,6 +49,23 @@ public sealed class PptController : IDisposable
         return false;
     }
 
+    /// <summary>跳转到指定页（v1.1.2 页码快捷选择）：COM GotoSlide 直跳。
+    /// 兜底按键通道无法表达任意页码，COM 不可用时返回 false（调用方提示）。</summary>
+    public bool GotoSlide(int slideNumber)
+    {
+        if (slideNumber <= 0) return false;
+        try
+        {
+            if (TryGetSlideShowView(out var view))
+            {
+                view.GotoSlide(slideNumber);
+                return true;
+            }
+        }
+        catch { _cachedApp = null; }   // RCW 失效即弃缓存（与翻页同策）
+        return false;
+    }
+
     /// <summary>退出放映（工具栏"停止播放"）。
     /// v0.1.5 强化：view.Exit()「返回成功」≠ 放映真的结束（个别版本/放映状态静默吞掉）——
     /// 300ms 后复核，仍存活则向放映窗口追加 ESC；UI 滞留由编排器看门狗最终兜底回收。</summary>

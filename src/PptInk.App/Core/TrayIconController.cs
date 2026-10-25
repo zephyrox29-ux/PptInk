@@ -80,6 +80,8 @@ public sealed class TrayIconController : IDisposable
         menu.Opening += (_, _) => debugItem.Checked = AppConfig.Current.DebugMode;
 
         menu.Items.Add("导出板书（PNG/SVG/JSON）", null, (_, _) => _ui.ExportInk());
+        // v1.1.1 真机验收配套：环境快照 + 配置 + 最近日志（不含板书/截图），排障可直发
+        menu.Items.Add("导出诊断包（排障用）", null, (_, _) => _ui.ExportDiagnostics());
         menu.Items.Add("设置…", null, (_, _) => _ui.OpenSettings());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("隐藏托盘图标（下次放映自动恢复）", null, (_, _) => Hide());
@@ -140,12 +142,25 @@ public sealed class TrayIconController : IDisposable
             g.Clear(System.Drawing.Color.FromArgb(24, 26, 32));
             g.FillEllipse(System.Drawing.Brushes.OrangeRed, 4, 4, 8, 8);
         }
-        return Icon.FromHandle(bmp.GetHicon());
+        // v1.1.1：记录自建 HICON，Dispose 时 DestroyIcon —— Icon.FromHandle 的句柄
+        // 不随 Icon/NotifyIcon 释放，每次重建托盘泄漏一枚 GDI 句柄。
+        _ownedHicon = bmp.GetHicon();
+        return Icon.FromHandle(_ownedHicon);
     }
+
+    private static IntPtr _ownedHicon = IntPtr.Zero;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr handle);
 
     public void Dispose()
     {
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
+        if (_ownedHicon != IntPtr.Zero)
+        {
+            try { DestroyIcon(_ownedHicon); } catch { }
+            _ownedHicon = IntPtr.Zero;
+        }
     }
 }

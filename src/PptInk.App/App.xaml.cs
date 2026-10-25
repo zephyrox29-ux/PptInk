@@ -85,6 +85,8 @@ public partial class App : Application
             // 6) 启动检测（COM 主通道 + WinEvent 兜底，零轮询）
             svc.Detector.Start();
 
+            // v1.1.1 取证：启动环境摘要一行进日志（版本/OS/.NET/显示器数/放映屏口径/档案/输入档）
+            try { svc.Log.Info(Core.DiagnosticsExporter.EnvironmentSummary()); } catch { }
             svc.Log.Info("PptInk 已驻留（S0 后台静默）");
         }
         catch (Exception ex)

@@ -229,6 +229,19 @@ public static class ThemeManager
 
     private static void ApplyAcrylicToWindow(Window w)
     {
+        // v1.1.2：AllowsTransparency=true 的 layered 窗口（设置中心）上 AccentPolicy
+        // 亚克力不仅不生效，实测会整窗渲染成黑色/闪烁（DWM 对 WS_EX_LAYERED 窗口
+        // 组合该策略的已知问题）—— 跳过 accent，材质观感由 0xCC 半透明前景承担。
+        if (w.AllowsTransparency)
+        {
+            if (!_acrylicUnsupportedLogged)
+            {
+                _acrylicUnsupportedLogged = true;
+                Core.AppLog.Instance.Info("亚克力在透明分层窗口上不可用（Windows 限制），已用半透明材质替代");
+            }
+            return;
+        }
+
         var hwnd = new WindowInteropHelper(w).Handle;
         if (hwnd == IntPtr.Zero) return;
 

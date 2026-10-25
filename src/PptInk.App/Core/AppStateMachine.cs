@@ -64,6 +64,8 @@ public sealed class AppStateMachine
                 _session = new ShowSession(ev.Source, ev.TotalSlides, ev.SlideIndex);
                 phase = TransitionTo(AppPhase.S1Active);
                 slide = ApplySlideIndex(ev.SlideIndex);
+                // v1.1.1 取证日志：放映开始（来源通道 + 起始页）—— 无放映环境排障第一现场
+                AppLog.Instance.Info($"放映开始：来源 {ev.Source} 第 {ev.SlideIndex}/{ev.TotalSlides} 页");
             }
         }
         Fire(phase, slide);
@@ -78,7 +80,11 @@ public sealed class AppStateMachine
             _session?.UpdatePosition(ev.SlideIndex, ev.TotalSlides);
             if (Phase == AppPhase.S1Active) slide = ApplySlideIndex(ev.SlideIndex);
         }
-        if (slide is { } idx) SlideIndexChanged?.Invoke(this, idx);
+        if (slide is { } idx)
+        {
+            AppLog.Instance.Info($"翻页：第 {idx}/{ev.TotalSlides} 页（来源 {ev.Source}）");
+            SlideIndexChanged?.Invoke(this, idx);
+        }
     }
 
     /// <summary>放映结束：UI 收回，回到 S0。墨迹缓存保留至导出或会话清理策略。</summary>
@@ -90,7 +96,11 @@ public sealed class AppStateMachine
             _yieldRecoverTimer?.Dispose();
             _yieldRecoverTimer = null;
             _session = null;
-            if (Phase != AppPhase.S0Background) phase = TransitionTo(AppPhase.S0Background);
+            if (Phase != AppPhase.S0Background)
+            {
+                phase = TransitionTo(AppPhase.S0Background);
+                AppLog.Instance.Info("放映结束：收回 UI，回 S0");   // v1.1.1 取证日志
+            }
         }
         if (phase is { } p) PhaseChanged?.Invoke(this, p);
     }

@@ -147,8 +147,13 @@ public sealed partial class UnifiedStageWindow : Window
         stageRoot.SizeChanged += (_, _) => SyncLayerSizes(stageRoot);
         Content = stageRoot;
 
-        // 跨屏 DPI 变化（笔记本 150% ↔ 大屏 100%）：WPF 自动重排后重设目标几何。
-        DpiChanged += (_, _) => RelocateToScreen();
+        // 跨屏 DPI 变化（笔记本 150% ↔ 大屏 100%）：先用本窗口 HWND 刷新 ShowScreen 口径
+        //（缩放已变而 500ms 轮询未到，直接按旧口径重设会差一个缩放比），再重设几何 + 物理钉位。
+        DpiChanged += (_, _) =>
+        {
+            if (_source is { } s) ShowScreen.UpdateFromShowWindow(s.Handle);
+            RelocateToScreen();
+        };
 
         InitializeInk();                   // 墨迹层输入/渲染接线（partial：UnifiedStageWindow.Ink.cs）
 
@@ -278,11 +283,23 @@ public sealed partial class UnifiedStageWindow : Window
 
     public void HideSilent() => Hide();
 
+    /// <summary>换屏前收回插件层浮面（v1.1.1）：计时器/点名/聚光灯/快捷插件面板等的
+    /// 屏幕坐标来自旧屏，换屏后会被钳到新屏边缘；随下次触发重新弹出即可。</summary>
+    public void RetractFloatingPanelsOnScreenChange()
+    {
+        foreach (var element in _pluginLayer.Children.OfType<StageElement>().ToArray())
+            if (element.IsVisible)
+                element.HideForExclusiveSlotReplacement(preserveChromeHost: false);
+    }
+
     /// <summary>舞台当前是否处于放映激活态（Toast/HUD 停用态借窗显示的还原判据）。</summary>
     public bool StageActive => _active;
 
     /// <summary>窗口几何对位放映屏（双屏：必须盖在放映屏而非主屏 —— 「画笔从未
-    /// 生效」的双屏根因之一）。ShowScreen.ScreenChanged / DpiChanged 时重跑，幂等。</summary>
+    /// 生效」的双屏根因之一）。ShowScreen.ScreenChanged / DpiChanged 时重跑，幂等。
+    /// v1.1.1：WPF 赋值后用物理像素把窗口钉到放映屏 —— 混合 DPI 部署（笔记本 150% +
+    /// 大屏 100%）下 Window.Left/Top 的跨屏落点是 WPF 已知缺陷（dotnet/wpf #4127），
+    /// DIP 赋值会落到错误显示器/差一个缩放比；GetMonitorInfo 的物理矩形不会错。</summary>
     public void RelocateToScreen()
     {
         var b = ShowScreen.Bounds;
@@ -296,6 +313,22 @@ public sealed partial class UnifiedStageWindow : Window
             if (Content is Grid root) SyncLayerSizes(root);
             ResyncStageElements();
         }
+        PinToScreenPhysical();
+    }
+
+    /// <summary>物理像素钉位（v1.1.1）：把窗口精确盖到放映屏矩形上。窗口 DIP 尺寸 ×
+    /// 新屏 DPI = 监视器物理尺寸，故尺寸本就吻合，钉位主要修正原点；跨屏迁移时 WPF
+    /// 会按 WM_DPICHANGED 重排内容，之后的 DpiChanged → RelocateToScreen 再钉一次收敛。</summary>
+    private void PinToScreenPhysical()
+    {
+        var src = _source;
+        if (src is null) return;
+        var p = ShowScreen.PhysicalBounds;
+        if (!double.IsFinite(p.Left) || !double.IsFinite(p.Top) || p.Width <= 0 || p.Height <= 0) return;
+        SetWindowPos(src.Handle, IntPtr.Zero,
+            (int)Math.Round(p.Left), (int)Math.Round(p.Top),
+            (int)Math.Round(p.Width), (int)Math.Round(p.Height),
+            SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
     // ———————— 穿透与档位 ————————
@@ -462,7 +495,9 @@ public sealed partial class UnifiedStageWindow : Window
     /// <summary>已迁入元素的屏幕矩形枚举（v0.9.1 用于穿透态 WM_NCHITTEST 分流：
     /// UI 区可点 / 其余放行给 PPT）。**统一为屏幕物理像素口径**（与 NCHITTEST 的
     /// lParam 一致）：PointToScreen 为物理像素、TranslatePoint 为窗口本地 DIP，
-    /// 故 DIP 位移需乘 DevicePerDip。仅枚举可见（含祖先可见）且有实际尺寸的元素。</summary>
+    /// 故 DIP 位移需乘 DevicePerDip。仅枚举可见（含祖先可见）且有实际尺寸的元素。
+    /// v1.1.1：尺寸经 TransformBounds 映射到窗口坐标 —— 工具栏带 LayoutTransform 时
+    /// RenderSize 是缩放前尺寸，原实现命中矩形比视觉小（按钮边缘穿透失效）。</summary>
     public void EnumerateScreenRects(Action<Rect> visit)
     {
         if (PresentationSource.FromVisual(this) is not HwndSource) return;
@@ -472,11 +507,19 @@ public sealed partial class UnifiedStageWindow : Window
             foreach (UIElement el in layer.Children)
             {
                 if (el is not FrameworkElement fe || !fe.IsVisible) continue;   // 隐藏元素不占命中区
-                var pos = el.TranslatePoint(new Point(0, 0), this);             // 窗口本地 DIP
-                double w = el.RenderSize.Width, h = el.RenderSize.Height;       // DIP
-                if (w <= 0 || h <= 0) continue;
-                var screen = new Rect(tl.X + pos.X * k, tl.Y + pos.Y * k, w * k, h * k);
-                visit(screen);
+                Rect local;
+                try
+                {
+                    local = el.TransformToVisual(this) is { } t
+                        ? t.TransformBounds(new Rect(new Point(0, 0), el.RenderSize))
+                        : new Rect(el.TranslatePoint(new Point(0, 0), this), el.RenderSize);
+                }
+                catch
+                {
+                    local = new Rect(el.TranslatePoint(new Point(0, 0), this), el.RenderSize);
+                }
+                if (local.Width <= 0 || local.Height <= 0) continue;
+                visit(new Rect(tl.X + local.X * k, tl.Y + local.Y * k, local.Width * k, local.Height * k));
             }
     }
 
@@ -620,6 +663,7 @@ public sealed partial class UnifiedStageWindow : Window
     private const int HWND_TOPMOST = -1;
     private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOZORDER = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
     private const int GW_HWNDPREV = 3;
     private const int WM_NCHITTEST = 0x0084;

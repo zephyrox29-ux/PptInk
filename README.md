@@ -13,9 +13,13 @@ Windows 课堂放映用的 PPT 手写批注工具。.NET 8 + WPF，x64。
 - 主程序自带 .NET 8 运行时（自包含发布），目标机器不需要预装 .NET。
 - 便携包以 `--portable` 启动，不写开机自启，删目录即卸载。
 - AI 形状识别需要 Python 3.10+ 和 NumPy：便携包默认不带解释器；在设置中心开启 AI 后
-  点「快速检测」，程序会自动配置（本机缺运行时会联网下载嵌入式 Python 3.12 与 NumPy，
-  仅此一次；识别推理本身始终在本地，不联网）。首次冷启动要几秒到二十秒，之后常驻。
+  点「快速检测」，缺运行时时程序会先弹窗说明来源与体积，经确认才联网下载嵌入式
+  Python 3.12 与 NumPy（下载内容校验 SHA256，只装进程序目录，不动系统环境；仅此一次；
+  识别推理本身始终在本地，不联网）。首次冷启动要几秒到二十秒，之后常驻。
 - 不启用 AI 时书写、擦除、翻页等全部核心功能不受影响。
+- 板书不会自动写到桌面：需要留存时用托盘「导出板书」；设置里可开启「退出时自动导出」
+  （默认关闭，避免共用电脑上泄露课堂内容）。
+- 排障：托盘「导出诊断包」会生成环境快照 + 配置 + 最近日志的 zip（不含板书与截图）。
 
 ## 构建
 
@@ -45,12 +49,14 @@ dotnet publish src/PptInk.App/PptInk.App.csproj -c Release -r win-x64 \
 ```
 python -m pip install -r python/requirements-dev.txt
 python -m pytest python/tests -q
+dotnet test PptInk.sln -c Release
 ```
 
 ## 目录
 
 ```
 src/PptInk.App/     WPF 主程序：墨迹引擎、舞台 UI、PowerPoint 集成、插件宿主
+tests/              C# 测试（历史树/笔迹模型）
 python/             AI 桥（stdio 行式 JSON）与手绘形状识别
 plugins/            Lua 插件示例
 scripts/            便携包构建脚本

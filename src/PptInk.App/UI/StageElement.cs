@@ -106,17 +106,19 @@ public class StageElement : ContentControl
     /// <summary>舞台窗口移动（多屏迁移后 RelocateToScreen）→ 元素重同步（屏幕记忆位换算新 Canvas 偏移）。</summary>
     private void OnStageLocationChanged(object? sender, EventArgs e) => SyncCanvasPosition();
 
-    /// <summary>屏幕 DIP → 舞台本地 Canvas 坐标换算（舞台 Left/Top 即其屏幕 DIP 原点，
-    /// 同一虚拟屏幕坐标系内严格等价变换）。</summary>
+    /// <summary>屏幕 DIP → 舞台本地 Canvas 坐标换算。v1.1.1：舞台原点取 ShowScreen.Bounds
+    /// （监视器 DIP 口径）而不是 Window.Left —— 混合 DPI 下 WPF 的 Left/Top 与目标监视器
+    /// 坐标系不一致（钉位后 Window.Left 可能停留在 WPF 自己的换算值），而舞台窗口物理上
+    /// 恒覆盖 ShowScreen 监视器矩形；以它为原点换算与实际渲染位置一致。</summary>
     internal void SyncCanvasPosition()
     {
         if (_stage is null) return;
-        // WPF Window.Left/Top can be NaN before the first Show. Canvas interprets a NaN
-        // attached coordinate as an unset value (0,0), which stacks every pre-created
-        // toolbar/island in the screen's upper-left corner. Never propagate non-finite
+        var origin = PptInk.Core.ShowScreen.Bounds;
+        double stageLeft = double.IsFinite(origin.Left) ? origin.Left : 0.0;
+        double stageTop = double.IsFinite(origin.Top) ? origin.Top : 0.0;
+        // Canvas interprets a NaN attached coordinate as an unset value (0,0), which stacks every
+        // pre-created toolbar/island in the screen's upper-left corner. Never propagate non-finite
         // coordinates; UnifiedStageWindow resyncs all children again after Show/Loaded.
-        double stageLeft = double.IsFinite(_stage.Left) ? _stage.Left : 0.0;
-        double stageTop = double.IsFinite(_stage.Top) ? _stage.Top : 0.0;
         double x = double.IsFinite(ScreenLeft) ? ScreenLeft - stageLeft : 0.0;
         double y = double.IsFinite(ScreenTop) ? ScreenTop - stageTop : 0.0;
         Canvas.SetLeft(this, double.IsFinite(x) ? x : 0.0);
@@ -322,27 +324,50 @@ public class StageElement : ContentControl
 
     // ———————— 屏幕矩形换算（引导定位/擦除锚点链路共用） ————————
 
+    /// <summary>元素本地尺寸映射到视觉坐标（含元素自身与祖先的 LayoutTransform；
+    /// 未挂视觉树时退回 RenderSize）。v1.1.1：RenderSize 不含布局变换 —— 缩放工具栏
+    /// （及其内部按钮）的锚点矩形原先按未缩放尺寸计算。</summary>
+    private static Size VisualSizeOf(UIElement el)
+    {
+        var size = el.RenderSize;
+        try
+        {
+            if (el.TransformToVisual(null) is { } t)
+            {
+                var b = t.TransformBounds(new Rect(new Point(0, 0), size));
+                if (double.IsFinite(b.Width) && double.IsFinite(b.Height) && b.Width > 0 && b.Height > 0)
+                    size = new Size(b.Width, b.Height);
+            }
+        }
+        catch { /* 未挂树/布局未完成：保留 RenderSize */ }
+        return size;
+    }
+
     /// <summary>元素 → 屏幕 DIP 矩形（PointToScreen 为物理像素，除以 DPI 得 DIP）。
-    /// v0.9.0 由 ToolbarWindow 迁入（元素在舞台上，PresentationSource 即舞台 hwnd，同屏等价）。</summary>
+    /// v0.9.0 由 ToolbarWindow 迁入（元素在舞台上，PresentationSource 即舞台 hwnd，同屏等价）。
+    /// v1.1.1 修复①：RenderSize 本身就是 DIP 且不含布局变换，原实现把尺寸又除了一次 DPI ——
+    /// 非 100% 缩放下锚点矩形按比例缩小，擦除浮岛锚点/副岛合并判定中心漂移。
+    /// v1.1.1 修复②：尺寸经 VisualSizeOf 映射到视觉坐标（工具栏缩放后按钮矩形随缩放）。</summary>
     internal static Rect ScreenRectOf(UIElement el)
     {
         var pt = el.PointToScreen(new Point(0, 0));
-        var size = el.RenderSize;
+        var size = VisualSizeOf(el);
         double dpi = 1.0;
         if (PresentationSource.FromVisual(el) is { CompositionTarget: { } ct })
             dpi = ct.TransformToDevice.M11;
-        return new Rect(pt.X / dpi, pt.Y / dpi, size.Width / dpi, size.Height / dpi);
+        return new Rect(pt.X / dpi, pt.Y / dpi, size.Width, size.Height);
     }
 
     /// <summary>元素 → 屏幕物理像素矩形（不除 DPI）。
     /// v0.8.0 引导定位专用：目标矩形以物理像素传递，引导覆盖窗口用【自身】DPI
     /// 统一换算为本地 DIP —— 混合 DPI 多屏部署（教师屏 100% + 大屏 150%）下，
     /// ScreenRectOf 的「除以元素所在屏 DPI」在跨屏目标时会错位，物理像素 +
-    /// 单一换算源是唯一不会错的传递方式。</summary>
+    /// 单一换算源是唯一不会错的传递方式。
+    /// v1.1.1：尺寸经 VisualSizeOf 映射（缩放工具栏内按钮的物理矩形随缩放）。</summary>
     internal static Rect ScreenRectOfPhysical(UIElement el)
     {
         var pt = el.PointToScreen(new Point(0, 0));
-        var size = el.RenderSize;
+        var size = VisualSizeOf(el);
         double dpi = 1.0;
         if (PresentationSource.FromVisual(el) is { CompositionTarget: { } ct })
             dpi = ct.TransformToDevice.M11;

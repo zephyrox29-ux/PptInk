@@ -133,7 +133,7 @@ public sealed partial class Toolbar
         // clipped strip or place it over a corner island when the central slot is too narrow.
         if (availableLocalW < 220 || availableLocalH < 210)
         {
-            Toast.Show("画笔面板放不下。关掉分割副栏，或把工具栏调小。");
+            Toast.Show("画笔面板放不下。把工具栏调小一点再试。");
             return;
         }
 
@@ -158,7 +158,7 @@ public sealed partial class Toolbar
         var buttonRect = GetToolScreenRect(tool) ?? GetToolScreenRect(InkTool.Pen);
         double anchorX = buttonRect is Rect anchorRect
             ? anchorRect.X + anchorRect.Width / 2
-            : Left + ActualWidth / 2;
+            : Left + VisualWidth / 2;
         double panelScreenWidth = _palettePanel.Width * scaleFactor;
         if (panelScreenWidth > laneWidth + 0.5)
         {

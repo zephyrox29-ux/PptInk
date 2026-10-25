@@ -41,10 +41,25 @@ def test_page_turn_islands_clip_and_scroll_inside_their_assigned_slot():
 def test_drag_constraints_are_based_on_owners_slot_not_live_overlap_scans():
     layout = source("StageUiLayout.cs")
     assert "if (owner is Toolbar)" in layout
-    assert "return segment.ConstrainToChromeSlot(requested, w, h)" in layout
     assert "ReferenceEquals(owner, _activePopover)" in layout
     assert "Fixed HUD column" in layout or "HUD 占左侧专属列" in layout
     assert "IntersectsWith" not in layout
+    # v1.1.2：分割副岛特性整体移除 —— 槽位规则里不再有 SegmentIsland 分支
+    assert "SegmentIsland" not in layout
+
+
+def test_split_segment_feature_is_removed():
+    """v1.1.2 回归守卫：可分割副岛是「工具栏只剩基础工具」用户报告的根因
+    （分割缝误触 + 副岛常不可见）。特性退场后，相关代码不得回归。"""
+    toolbar = source("Toolbar.Layout.cs")
+    orchestrator = source("UiOrchestrator.Islands.cs")
+    app_config = (ROOT / "src" / "PptInk.App" / "Core" / "AppConfig.cs").read_text(encoding="utf-8")
+    assert "SplitAtOps" not in toolbar
+    assert "BuildSplitGrip" not in toolbar
+    assert "MergeOpsBack" not in toolbar
+    assert "RebuildSegment" not in orchestrator
+    assert "cfg.ToolbarSplitAfterId = null;" in app_config
+    assert not (UI / "SegmentIsland.cs").exists()
 
 
 def test_modal_modes_and_notifications_are_mutually_exclusive_with_panels():
@@ -83,7 +98,8 @@ def test_enabling_debug_ui_releases_popup_slot_before_badge_is_painted():
     assert "StageUiLayout.PrepareForDebugBadgeChange();" in source("UiOrchestrator.cs")
     assert "PopupWorkspaceTop" in layout
     assert "96 : 8" in layout
-    assert "owner.ScreenTop - PopupWorkspaceTop - reservedSegmentHeight" in layout
+    # v1.1.2：副岛行预留随分割特性移除 —— 面板可用高度直接算到 chrome 顶
+    assert "owner.ScreenTop - PopupWorkspaceTop" in layout
 
 
 def test_debug_hud_is_clipped_to_its_own_column_and_badge_has_capacity_guard():

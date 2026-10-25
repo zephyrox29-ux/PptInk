@@ -35,6 +35,8 @@ jobs:
         run: dotnet restore PptInk.sln
       - name: Build Release
         run: dotnet build PptInk.sln --configuration Release --no-restore
+      - name: Run C# tests
+        run: dotnet test PptInk.sln --configuration Release --no-build
       - name: Publish self-contained portable x64 package
         shell: pwsh
         run: ./scripts/build-portable.ps1 -Configuration Release -Runtime win-x64

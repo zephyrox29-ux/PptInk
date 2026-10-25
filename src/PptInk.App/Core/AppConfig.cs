@@ -237,6 +237,11 @@ public sealed class AppConfig
     /// <summary>轻量渲染：关闭纯装饰性的落笔反馈圈、消散粒子与清空扫光，保留墨迹和擦除结果。</summary>
     public bool LightweightRendering { get; set; } = false;
 
+    /// <summary>退出/换课件时自动把板书导出到 桌面\PptInk导出\。v1.1.1 隐私默认关闭：
+    /// 共用教室电脑上，默认把整节课板书写到桌面（任何登录者可见）不合适。需要留存用
+    /// 托盘/设置的手动导出；开启本项恢复 1.1.0 及之前的自动行为。</summary>
+    public bool AutoExportOnExit { get; set; } = false;
+
     // 上次停靠位置（重启还原）
     public double? ToolbarDockX { get; set; }
     public double ToolbarDockY { get; set; } = double.NaN;
@@ -347,19 +352,9 @@ public sealed class AppConfig
             foreach (var t in cfg.ToolbarLayout.Where(t => opsIds.Contains(t.Id)))
                 t.Visible = true;
 
-        // v0.9.7 自愈 2：分割点后无可见元素 = 分割失效（主栏被截断但副岛为空），
-        // 清除分割标记让主栏恢复完整 —— 避免「撤销/AI/插件既不在主栏也不在副岛」的黑洞。
-        if (cfg.ToolbarSplitAfterId is { } splitAfter)
-        {
-            bool afterSplit = false;
-            bool anyVisibleAfterSplit = false;
-            foreach (var t in cfg.ToolbarLayout)
-            {
-                if (afterSplit && t.Visible && t.Id != "nav") { anyVisibleAfterSplit = true; break; }
-                if (t.Id == splitAfter) afterSplit = true;
-            }
-            if (!anyVisibleAfterSplit) cfg.ToolbarSplitAfterId = null;
-        }
+        // v1.1.2：分割副岛特性已移除（分割缝误触导致 Ops 段进入常不可见的副岛，
+        // 「工具栏只剩基础工具」的报告根因）。旧配置一律清除标记，主栏恢复全量。
+        cfg.ToolbarSplitAfterId = null;
     }
 
     private static bool IsHexColor(string? value) =>
@@ -397,7 +392,9 @@ public sealed class AppConfig
 
         cfg.InputMode = cfg.InputMode is "touch" or "compat" or "super" ? cfg.InputMode : "touch";
         cfg.Theme = cfg.Theme is "Dark" or "Light" or "Auto" ? cfg.Theme : "Dark";
-        cfg.Material = cfg.Material is "Solid" or "Translucent" or "Acrylic" or "Minimal" ? cfg.Material : "Translucent";
+        // v1.1.2：亚克力材质选项移除 —— 全部窗口均为 WPF 透明分层窗口，DWM 亚克力
+        // 在其上不生效且实测渲染异常。旧配置的 Acrylic 映射回半透明（观感最接近）。
+        cfg.Material = cfg.Material is "Solid" or "Translucent" or "Minimal" ? cfg.Material : "Translucent";
         cfg.ShapeAssistMode = cfg.ShapeAssistMode is "auto" or "bubble" ? cfg.ShapeAssistMode : "auto";
         // v1.0.0：AI 时机/范围/能力参数 + 笔墨高级参数钳制（防手改配置越界）
         cfg.AiTriggerTiming = cfg.AiTriggerTiming is "pause" or "lift" or "manual" ? cfg.AiTriggerTiming : "pause";

@@ -8,10 +8,9 @@ namespace PptInk.UI;
 /// <summary>
 /// 放映界面的硬性槽位规则（不是碰撞检测器）：
 /// 1) 左/右翻页岛各占一个底角；主工具栏只占两岛之间的中央底栏；
-/// 2) 分割副栏只占主栏上方的独立横行；
-/// 3) 所有可交互浮动面板共享一个工作槽，同一时刻只准一个面板拥有它；
-/// 4) 调试 HUD 占固定左侧区域，工作槽只从 HUD 右侧开始；普通浮动面板不能进入底栏；
-/// 5) 模态引导/聚光灯是单独模式，不与普通浮岛并行显示。
+/// 2) 所有可交互浮动面板共享一个工作槽，同一时刻只准一个面板拥有它；
+/// 3) 调试 HUD 占固定左侧区域，工作槽只从 HUD 右侧开始；普通浮动面板不能进入底栏；
+/// 4) 模态引导/聚光灯是单独模式，不与普通浮岛并行显示。
 /// 位置由操作与槽位约束，而不是等元素重叠后再进行补救。
 /// </summary>
 internal static class StageUiLayout
@@ -23,7 +22,6 @@ internal static class StageUiLayout
     private static double _chromeTop = 600;
     private static double _popupBottom = 588;
     private static Toolbar? _toolbar;
-    private static SegmentIsland? _segment;
     private static StageElement? _activePopover;
     // The toolbar palette is hosted inside the toolbar itself but owns the same exclusive popup lease.
     private static bool _embeddedChromePanel;
@@ -43,7 +41,7 @@ internal static class StageUiLayout
         _screen = screen;
         _laneLeft = screen.Left + 240;
         _laneRight = screen.Right - 240;
-        _dockBottom = screen.Bottom - (AppConfig.Current.RespectGestureZone ? 64 : 16);
+        _dockBottom = screen.Bottom - (AppConfig.Current.RespectGestureZone ? 48 : 8);
         _chromeTop = _dockBottom - 64;
         _popupBottom = _chromeTop - 12;
     }
@@ -59,7 +57,7 @@ internal static class StageUiLayout
 
     internal static void Configure(
         Rect screen, double laneLeft, double laneRight, double dockBottom,
-        Toolbar? toolbar, SegmentIsland? segment)
+        Toolbar? toolbar)
     {
         if (screen.Width <= 0 || screen.Height <= 0) return;
         _screen = screen;
@@ -69,12 +67,9 @@ internal static class StageUiLayout
         _laneRight = Math.Clamp(laneRight, _laneLeft + 1, laneMax);
         _dockBottom = Math.Clamp(dockBottom, screen.Top + 48, screen.Bottom - 8);
         _toolbar = toolbar;
-        _segment = segment;
 
         // chrome 边界来自固定槽位自身；不遍历任意窗口矩形，也不做相交扫描。
         double top = toolbar is not null ? toolbar.ScreenTop : _dockBottom - 64;
-        // 副栏即使当前隐藏，也保留它的专属行，避免面板刚好占到该行后副栏又被唤起。
-        if (segment is not null) top = Math.Min(top, segment.ScreenTop);
         _chromeTop = Math.Clamp(top, screen.Top + 8, _dockBottom);
         _popupBottom = _chromeTop - 12;
 
@@ -251,38 +246,20 @@ internal static class StageUiLayout
         return true;
     }
 
-    /// <summary>Maximum vertical growth available to the toolbar palette without entering the
-    /// reserved segment row above the bar or crossing the fixed diagnostics-badge band.</summary>
+    /// <summary>Maximum vertical growth available to the toolbar palette without crossing the
+    /// fixed diagnostics-badge band.</summary>
     internal static double AvailableChromeExpansion(Toolbar owner)
     {
         EnsureScreenInitialized();
         if (!ReferenceEquals(_toolbar, owner) || _activeModal is not null) return 0;
-        double reservedSegmentHeight = 0;
-        if (_segment is { } segment)
-        {
-            segment.Measure(new Size(Math.Max(1, _laneRight - _laneLeft), _screen.Height));
-            segment.UpdateLayout();
-            reservedSegmentHeight = segment.ActualHeight > 1 ? segment.ActualHeight : segment.DesiredSize.Height;
-            if (!double.IsFinite(reservedSegmentHeight) || reservedSegmentHeight < 1) reservedSegmentHeight = 64;
-            reservedSegmentHeight += 12;
-        }
-        return Math.Max(0, owner.ScreenTop - PopupWorkspaceTop - reservedSegmentHeight);
+        return Math.Max(0, owner.ScreenTop - PopupWorkspaceTop);
     }
 
-    /// <summary>Called synchronously whenever the toolbar's outer height changes. The segment row
-    /// moves before WPF renders the next frame, keeping both rows disjoint during palette animation.</summary>
+    /// <summary>Called synchronously whenever the toolbar's outer height changes.</summary>
     internal static void ChromeGeometryChanged()
     {
         if (_toolbar is null) return;
-        if (_segment is { } segment)
-        {
-            segment.Measure(new Size(Math.Max(1, _laneRight - _laneLeft), _screen.Height));
-            double sh = segment.ActualHeight > 1 ? segment.ActualHeight : segment.DesiredSize.Height;
-            if (!double.IsFinite(sh) || sh < 1) sh = 64;
-            segment.SetChromeSlot(_laneLeft, _laneRight, _toolbar.ScreenTop - sh - 12);
-        }
         double top = _toolbar.ScreenTop;
-        if (_segment is not null) top = Math.Min(top, _segment.ScreenTop);
         _chromeTop = Math.Clamp(top, _screen.Top + 8, _dockBottom);
         _popupBottom = _chromeTop - 12;
         ApplyDebugHudSlotToVisibleHud();
@@ -334,22 +311,27 @@ internal static class StageUiLayout
         return true;
     }
 
-    /// <summary>DragKit 输入阶段的硬约束。元素被限制在自己所属槽位，拖动本身无法进入别人的区域。</summary>
+    /// <summary>DragKit 输入阶段的硬约束。元素被限制在自己所属槽位，拖动本身无法进入别人的区域。
+    /// v1.1.1：优先 DesiredSize（含 LayoutTransform 的视觉尺寸）—— 原 Math.Max(Actual, Desired)
+    /// 在 70% 档取到未缩放的大值，与 Toolbar.ClampToScreen 的视觉口径互相打架。</summary>
     internal static Point ConstrainDrag(StageElement owner, Point requested)
     {
         EnsureScreenInitialized();
-        double w = Math.Max(owner.ActualWidth, owner.DesiredSize.Width);
-        double h = Math.Max(owner.ActualHeight, owner.DesiredSize.Height);
-        if (!double.IsFinite(w) || w < 1) w = Math.Max(owner.Width, 80);
-        if (!double.IsFinite(h) || h < 1) h = Math.Max(owner.Height, 48);
+        double w = owner.DesiredSize.Width;
+        double h = owner.DesiredSize.Height;
+        if (!double.IsFinite(w) || w < 1) w = Math.Max(Math.Max(owner.ActualWidth, owner.Width), 80);
+        if (!double.IsFinite(h) || h < 1) h = Math.Max(Math.Max(owner.ActualHeight, owner.Height), 48);
 
         if (owner is Toolbar)
         {
+            // v1.1.2：放开二维自由拖动 —— 原实现 Y 轴强制锁回底部停靠行（教师反馈
+            // 「只能在横轴范围内拖动」）。纵向允许全屏活动，横向仍限制在中央槽内。
             double leftMax = Math.Max(_laneLeft, _laneRight - w);
-            return new Point(Math.Clamp(requested.X, _laneLeft, leftMax), _dockBottom - h);
+            double topMin = _screen.Top + 8;
+            double topMax = Math.Max(topMin, _screen.Bottom - h - 8);
+            return new Point(Math.Clamp(requested.X, _laneLeft, leftMax),
+                             Math.Clamp(requested.Y, topMin, topMax));
         }
-        if (owner is SegmentIsland segment)
-            return segment.ConstrainToChromeSlot(requested, w, h);
 
         if (owner is DebugHudElement)
         {
@@ -396,7 +378,7 @@ internal static class StageUiLayout
                     // Onboarding is a hole-punch modal: permanent chrome must stay available
                     // inside the holes, while every transient panel/HUD/toast is dismissed.
                     if (preserveChromeUnderHole &&
-                        element is Toolbar or PageTurnIsland or SegmentIsland) continue;
+                        element is Toolbar or PageTurnIsland) continue;
                     ModalPreviousVisibility[element] = element.Visibility;
                     element.Visibility = Visibility.Collapsed;
                 }

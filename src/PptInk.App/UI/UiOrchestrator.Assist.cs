@@ -201,15 +201,21 @@ public sealed partial class UiOrchestrator
     }
 
     /// <summary>bubble 模式：笔迹包围盒上方弹「规整为」气泡（6s 礼貌退场），确认才替换。
-    /// 审查修复：target.Bounds 是墨迹层窗口本地坐标（引擎点原点=窗口左上角），
-    /// 原实现直接当屏幕绝对坐标传给 ShowNearAnchor —— 双屏（墨迹层在扩展屏）时
-    /// 气泡按主屏原点钳制，弹到完全无关的位置。现补上墨迹层窗口原点偏移。</summary>
+    /// v1.0.0 修复：target.Bounds 是窗口本地坐标，补窗口原点偏移（双屏跑位）。
+    /// v1.1.1 修复：本地坐标其实是 3840×2160 墨迹模型坐标 —— 直接当 DIP 用在 1080p
+    /// 视口下放大 2 倍，锚点超屏后被钳到最右（气泡恒在右侧而非笔迹上方）。
+    /// 现经 CanvasPointToDip 缩放到视口 DIP，再加放映屏原点得屏幕绝对 DIP。</summary>
     private void ShowAssistBubble(InkEngine engine, StrokeData target, List<StrokeData> scopeStrokes,
         PythonBridge.RecognizedShape shape, string name)
     {
         _shapeBubble?.Close();
-        var b = target.Bounds;
-        if (_overlay is { } ov) b.Offset(ov.Left, ov.Top);   // 本地 → 屏幕绝对 DIP
+        var model = target.Bounds;
+        var b = _overlay is { } ov
+            ? new Rect(ov.CanvasPointToDip(new Point(model.X, model.Y)),
+                       ov.CanvasPointToDip(new Point(model.X + model.Width, model.Y + model.Height)))
+            : model;
+        var origin = Core.ShowScreen.Bounds;   // 舞台恒覆盖放映屏：原点用监视器口径（混合 DPI 下比 Window.Left 可靠）
+        b.Offset(origin.Left, origin.Top);
         _shapeBubble = new ShapeAssistBubble(name, shape.Confidence,
             onConfirm: () => CommitRegularized(engine, target, scopeStrokes, shape, name),
             onSessionOff: () => _assistSessionOff = true);

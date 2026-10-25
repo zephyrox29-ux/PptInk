@@ -269,6 +269,13 @@ public sealed partial class UnifiedStageWindow
             dipPoint.Y * _svc.InkDocument.ScreenHeightPx / vh);
     }
 
+    /// <summary>固定 3840×2160 墨迹模型坐标 → 窗口本地 DIP（ToCanvasPoint 的逆映射；
+    /// AI 气泡锚点等 UI 元素定位用）。1080p 视口下因子 ≈0.5，原先把模型坐标直接当
+    /// 屏幕 DIP 用，气泡恒跑右侧（v1.1.1 修复）。</summary>
+    internal Point CanvasPointToDip(Point canvasPoint) => new(
+        canvasPoint.X * CanvasToDipScaleX,
+        canvasPoint.Y * CanvasToDipScaleY);
+
     private InkPoint ToCanvasPoint(InkPoint dipPoint)
     {
         var p = ToCanvasPoint(new Point(dipPoint.X, dipPoint.Y));

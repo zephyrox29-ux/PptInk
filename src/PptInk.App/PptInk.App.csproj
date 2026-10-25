@@ -16,7 +16,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <!-- 版本号单一来源：打包脚本读这里，设置页"关于"读程序集 —— 改版本只改这一处 -->
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Product>PPT 批注工具（希沃大屏教学版）</Product>
     <InvariantGlobalization>false</InvariantGlobalization>
     <!-- 单文件发布，配套内嵌 Python 运行时由安装器（installer/）负责合并 -->
@@ -41,5 +41,10 @@
   <!-- 托盘图标：TrayIconController.LoadIcon 经 pack URI 加载（Resource 才可 pack 寻址） -->
   <ItemGroup>
     <Resource Include="Assets\tray.ico" />
+  </ItemGroup>
+
+  <!-- v1.1.1 测试体系：纯函数/历史树等 internal 成员对测试程序集开放 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="PptInk.App.Tests" />
   </ItemGroup>
 </Project>

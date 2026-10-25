@@ -68,7 +68,7 @@ public static class OnboardingCatalog
         {
             Icon = "IconSparkle",
             Title = "嗨，老师！",
-            Body = "您正在使用 Xianfish 开发的 PptInk。功能还在测试，欢迎提反馈 😊",
+            Body = "您正在使用 PptInk 融绘（Xianfish · Hydrotessera 开发）。功能还在测试，欢迎提反馈 😊",
             AwaitChoice = true,
             StayMs = WelcomeMs,
         },

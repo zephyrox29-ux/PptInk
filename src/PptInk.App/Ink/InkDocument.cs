@@ -312,13 +312,20 @@ public sealed class InkPage
         }));
 
     /// <summary>程序退出兜底：会话有墨迹时保存到本地（不弹窗，下次可找回）。
-    /// 快照由调用方持引擎锁构造（InkEngine.TrySaveSessionSafe），IO 锁外执行。</summary>
+    /// 快照由调用方持引擎锁构造（InkEngine.TrySaveSessionSafe），IO 锁外执行。
+    /// v1.1.1：受 AppConfig.AutoExportOnExit 门禁（默认关闭，隐私）—— 关闭时跳过
+    /// 落盘只记日志；手动导出（ExportSessionSafe）不经本方法，不受影响。</summary>
     public void TrySaveSession(List<(int Idx, InkPage Page, StrokeData[] Strokes)> snapshot)
     {
         try
         {
             if (snapshot.Count > 0)
             {
+                if (!Core.AppConfig.Current.AutoExportOnExit)
+                {
+                    AppLog.Instance.Info($"自动导出未开启，跳过板书落盘（{snapshot.Count} 页，退出即清）");
+                    return;
+                }
                 var dir = ExportSession(snapshot);
                 AppLog.Instance.Info($"会话墨迹已自动导出：{dir}");
             }

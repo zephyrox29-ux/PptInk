@@ -157,24 +157,26 @@ public sealed class InkEngine
     /// 身份变化 = 换了课件 → 先按退出兜底同路径自动存档旧会话，再清空全部页面与历史。
     /// 不修的后果：文档全进程单例、页面按幻灯片序号缓存且从不清理——同一节课换一份课件放映，
     /// 旧课件的批注会原样出现在新课件相同页码上（上一节课的答案带到下一节课）。
-    /// 身份不可得（WPS/兜底通道）或同一课件重开放映时不动，保持既有行为。</summary>
-    public void BeginPresentationSession(string? identity)
+    /// 身份不可得（WPS/兜底通道）或同一课件重开放映时不动，保持既有行为。
+    /// 返回 true = 丢弃了带墨迹的旧会话（编排器据此在自动导出关闭时提醒留存）。</summary>
+    public bool BeginPresentationSession(string? identity)
     {
-        if (string.IsNullOrEmpty(identity)) return;
+        if (string.IsNullOrEmpty(identity)) return false;
         List<(int Idx, InkPage Page, StrokeData[] Strokes)>? snapToSave = null;
         lock (_gate)
         {
-            if (_doc.SessionIdentity == identity) return;      // 同课件重开放映：保留批注
+            if (_doc.SessionIdentity == identity) return false;    // 同课件重开放映：保留批注
             bool hadInk = false;
             foreach (var p in _doc.Pages.Values) { if (p.Strokes.Count > 0) { hadInk = true; break; } }
             _doc.SessionIdentity = identity;
-            if (!hadInk) return;                                // 首场（或旧课件无墨迹）：登记身份即可
+            if (!hadInk) return false;                             // 首场（或旧课件无墨迹）：登记身份即可
             CancelLiveStroke();                                 // 收尾进行中的笔/擦除批，随旧会话一起存档
             snapToSave = _doc.SnapshotPages();                  // 锁内取快照，重置后旧墨迹仍可写盘
             _doc.ResetSession();
         }
         _doc.TrySaveSession(snapToSave);                        // 锁外 IO（桌面 PptInk导出），与退出兜底同路径
         VisualInvalidated?.Invoke(this, new InkVisualInvalidated { Reason = InvalidateReason.HistoryChanged });
+        return true;
     }
 
     // ———————— 书写输入（StylusPlugIn 墨迹线程调用） ————————

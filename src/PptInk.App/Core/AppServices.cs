@@ -159,7 +159,13 @@ public sealed class AppServices
                         System.IO.Pipes.PipeOptions.Asynchronous | System.IO.Pipes.PipeOptions.CurrentUserOnly);
                     await server.WaitForConnectionAsync(token);
                     using var reader = new System.IO.StreamReader(server);
-                    var line = await reader.ReadLineAsync(token);
+                    // v1.1.1：读行加 5s 超时 —— 连接后不发数据的客户端（探测/半开连接）原先
+                    // 让本循环永久停在 ReadLineAsync，唤起管道自此停摆。
+                    using var readCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    readCts.CancelAfter(TimeSpan.FromSeconds(5));
+                    string? line;
+                    try { line = await reader.ReadLineAsync(readCts.Token); }
+                    catch (OperationCanceledException) when (!token.IsCancellationRequested) { continue; }
                     if (line is not null && line.Contains("show-tray-menu", StringComparison.OrdinalIgnoreCase) &&
                         !token.IsCancellationRequested)
                         UiOrchestrator.ForceActivate();

@@ -93,6 +93,11 @@ public sealed class SettingsWindow : Window
         Top = sb.Top + (sb.Height - _windowHeight) / 2;
         Loaded += (_, _) => AnimationKit.FadeIn(this, 180);
         KeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
+        // v1.1.1：跟随放映屏 + 物理居中。DIP 赋值在混合 DPI 下会落错屏（dotnet/wpf #4127），
+        // 载入后按窗口实际 DPI 用物理像素居中；放映屏变化时同步跟移（后台线程事件 → 封送 UI）。
+        Loaded += (_, _) => PositionToScreenPhysical();
+        Core.ShowScreen.ScreenChanged += OnShowScreenChanged;
+        Closed += (_, _) => Core.ShowScreen.ScreenChanged -= OnShowScreenChanged;
 
         ThemeManager.Register(this);        // 材质系统（Acrylic 时 DWM 亚克力）
         Closed += (_, _) => ThemeManager.Unregister(this);
@@ -101,6 +106,37 @@ public sealed class SettingsWindow : Window
         Content = _root;
         Navigate("appearance", initial: true);
     }
+
+    // ———————— 放映屏跟随（v1.1.1） ————————
+    // 混合 DPI 部署下 Window.Left/Top 的 DIP 赋值会落错屏（dotnet/wpf #4127）。
+    // 载入后窗口 DPI 已知，按「监视器物理矩形 + 窗口物理尺寸」用 SetWindowPos 居中。
+
+    private void OnShowScreenChanged() =>
+        Dispatcher.BeginInvoke(() => { if (IsLoaded) PositionToScreenPhysical(); });
+
+    private void PositionToScreenPhysical()
+    {
+        try
+        {
+            if (PresentationSource.FromVisual(this) is not System.Windows.Interop.HwndSource src ||
+                src.CompositionTarget is not { } ct) return;
+            double k = ct.TransformToDevice.M11;
+            var phys = Core.ShowScreen.PhysicalBounds;
+            if (k <= 0 || !double.IsFinite(k) || phys.Width <= 0 || phys.Height <= 0) return;
+            double physW = _windowWidth * k, physH = _windowHeight * k;
+            double x = phys.Left + (phys.Width - physW) / 2;
+            double y = phys.Top + (phys.Height - physH) / 2;
+            SetWindowPos(src.Handle, IntPtr.Zero, (int)Math.Round(x), (int)Math.Round(y),
+                0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        catch { /* 定位失败不影响设置功能 */ }
+    }
+
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOACTIVATE = 0x0010;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
     /// <summary>应用版本号（v0.4.1 修复：从程序集读取，自动跟随 csproj，永不失同步。
     /// 原硬编码 "v1.2" 与实际版本 0.4.0 脱节 —— 用户反馈问题时无法准确标识版本，
@@ -215,9 +251,20 @@ public sealed class SettingsWindow : Window
         bar.Children.Add(close);
 
         var border = new Border { Child = bar, CornerRadius = new CornerRadius(14, 14, 0, 0) };
-        // v0.9.6：统一拖动 —— 标题栏走 DragKit（三源定源：触摸/笔/鼠标一致，松手即停）；
-        // 冒泡段不吞 close 按钮点击。
-        new DragKit(this).WireBubble(border);
+        // v1.1.2 修复：Border 无背景 = 不参与命中测试，标题栏 95% 的区域鼠标事件直接
+        // 穿透（只有恰好压在标题文字上才能拖）——「设置面板不能拖动」的根因。
+        border.Background = Brushes.Transparent;
+        // v1.1.2：拖动改用原生 DragMove() —— 此前 DragKit 逐帧写 Window.Left/Top，
+        // 透明分层窗口（AllowsTransparency + DropShadow）每帧全量重合成，拖动鬼畜闪动；
+        // DragMove 走系统移动循环（WM_SYSCOMMAND），窗口按整块搬移零重绘。触摸经 WPF
+        // 提升为鼠标按下同样可拖；关闭按钮的 Preview 按下已消费，不会被拖动劫持。
+        border.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ButtonState == MouseButtonState.Pressed)
+            {
+                try { DragMove(); } catch (InvalidOperationException) { }   // 非按下态调用会抛，忽略即可
+            }
+        };
         return border;
     }
 
@@ -228,7 +275,7 @@ public sealed class SettingsWindow : Window
         // 版本号沉底（v0.4.1：读程序集版本，自动跟随 csproj）
         var ver = new TextBlock
         {
-            Text = $"融绘 {AppVersion} · Build by Xianfish",
+            Text = $"融绘 {AppVersion} · Xianfish & Hydrotessera",
             FontSize = 10.5,
             Margin = new Thickness(17, 0, 0, 0),
         };
@@ -381,9 +428,11 @@ public sealed class SettingsWindow : Window
             wrap.Children.Add(AccentSwatch(name, hex));
         sp.Children.Add(Card("强调色", wrap));
 
-        // —— 材质 ——
+        // —— 材质（v1.1.2：移除「亚克力模糊」选项 —— 本应用全部窗口都是 WPF 透明
+        // 分层窗口，DWM AccentPolicy 亚克力在其上不生效且实测渲染异常，选项是虚假承诺；
+        // 旧配置的 Acrylic 由 ThemeManager.NormalizeMaterial 映射回半透明） ——
         var mWrap = new WrapPanel();
-        foreach (var m in new[] { PanelMaterial.Solid, PanelMaterial.Translucent, PanelMaterial.Acrylic, PanelMaterial.Minimal })
+        foreach (var m in new[] { PanelMaterial.Solid, PanelMaterial.Translucent, PanelMaterial.Minimal })
             mWrap.Children.Add(MaterialCard(m));
         sp.Children.Add(Card("面板材质", mWrap));
 
@@ -724,28 +773,12 @@ public sealed class SettingsWindow : Window
             // v0.7.0：默认布局 = 翻页岛两份全开（nav 项开关与岛实例一体收敛）
             _svc.Config.PageIslandRightEnabled = true;
             _svc.Config.PageIslandLeftEnabled = true;
-            // v0.9.7：同时清除分割标记 —— 副岛回主栏（撤销/重做/AI/插件回到主工具栏）
-            _svc.Config.ToolbarSplitAfterId = null;
             _svc.Config.Save();
             _svc.UiOrchestrator.RefreshToolbarLayout();
             _svc.UiOrchestrator.RefreshPageIslands();
             RefreshCurrentPage();
             Toast.Show("已恢复默认布局。");
         }));
-        // v0.9.7：当前处于分割态时提供「合并副岛回主栏」快捷入口
-        //（用户找不到副岛时的自助恢复路径，不再只能靠拖回）。
-        if (_svc.Config.ToolbarSplitAfterId is not null)
-        {
-            resetRow.Children.Add(new Border { Width = 10 });
-            resetRow.Children.Add(GhostButton("合并副岛回主栏", "IconCheck", () =>
-            {
-                _svc.Config.ToolbarSplitAfterId = null;
-                _svc.Config.Save();
-                _svc.UiOrchestrator.RefreshToolbarLayout();
-                RefreshCurrentPage();
-                Toast.Show("副岛已并回主工具栏。");
-            }));
-        }
         sp.Children.Add(resetRow);
 
         return sp;
@@ -1153,7 +1186,8 @@ public sealed class SettingsWindow : Window
         try
         {
             var progress = new Progress<string>(msg => SetText("AI 自检中… " + msg));
-            var result = await _svc.PythonBridge.CheckHealthAsync(default, progress);
+            // v1.1.1：联网下载前弹授权（来源/体积/写入位置），拒绝则不联网、AI 不启用
+            var result = await _svc.PythonBridge.CheckHealthAsync(default, progress, ConfirmAiNetworkAsync);
             MessageBox.Show(this, result, "AI 自检结果",
                 MessageBoxButton.OK,
                 result.StartsWith("AI 功能检测通过", StringComparison.Ordinal) ? MessageBoxImage.Information : MessageBoxImage.Warning);
@@ -1167,6 +1201,16 @@ public sealed class SettingsWindow : Window
             button.IsEnabled = true;
             SetText("快速检测 AI 功能");
         }
+    }
+
+    /// <summary>AI 运行环境联网授权（v1.1.1）：后台线程回调 → 封送 UI 弹确认框。</summary>
+    private Task<bool> ConfirmAiNetworkAsync(string reason)
+    {
+        var app = Application.Current;
+        if (app is null) return Task.FromResult(false);
+        return app.Dispatcher.InvokeAsync(() =>
+            MessageBox.Show(this, reason + "\n\n是否允许本次下载？", "AI 功能需要联网下载",
+                MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK).Task;
     }
 
     private FrameworkElement BuildBehaviorPage()
@@ -1356,7 +1400,7 @@ public sealed class SettingsWindow : Window
             v => { cfg.OnlyFingerInk = v; _svc.PalmRejection.OnlyFingerMode = v; cfg.Save(); }));
         touchList.Children.Add(RowDivider());
         touchList.Children.Add(SwitchRow("避让系统手势区", "工具栏和起笔都避开屏幕边缘的手势区。", cfg.RespectGestureZone,
-            v => { cfg.RespectGestureZone = v; _svc.PalmRejection.RespectGestureZone = v; cfg.Save(); }));
+            v => { cfg.RespectGestureZone = v; _svc.PalmRejection.RespectGestureZone = v; cfg.Save(); _svc.UiOrchestrator.RefreshChromeLayout(); }));
         sp.Children.Add(Card("触控与误触", touchList));
 
         // 笔记本 / 普通触控屏试用：手掌抑制阈值按希沃红外框调校，电容屏/鼠标会误杀；
@@ -1398,7 +1442,7 @@ public sealed class SettingsWindow : Window
         integList.Children.Add(aiHealthButton);
         var aiHealthNote = new TextBlock
         {
-            Text = "临时启动一次识别进程，验证依赖是否齐全。不改 AI 开关，也不留后台进程。",
+            Text = "临时启动一次识别进程，验证依赖是否齐全。不改 AI 开关，也不留后台进程。缺运行时会先询问是否联网下载（python.org 与 PyPI，共约 27MB，装进程序目录，不动系统环境）。",
             FontSize = 11, Margin = new Thickness(4, 6, 12, 8), TextWrapping = TextWrapping.Wrap,
         };
         aiHealthNote.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondaryBrush");
@@ -1627,7 +1671,14 @@ public sealed class SettingsWindow : Window
                 MessageBox.Show(this, ex.Message, "打开目录失败", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }));
-        sp.Children.Add(Card("数据", dataRow));
+        var dataList = new StackPanel();
+        dataList.Children.Add(SwitchRow("退出时自动导出板书",
+            "默认关闭：共用电脑上不把上课板书自动写到桌面。开启后：退出程序或换课件时自动导出到 桌面\\PptInk导出\\。手动导出不受影响。",
+            cfg.AutoExportOnExit,
+            v => { cfg.AutoExportOnExit = v; cfg.Save(); }));
+        dataList.Children.Add(RowDivider());
+        dataList.Children.Add(dataRow);
+        sp.Children.Add(Card("数据", dataList));
 
         return sp;
     }
@@ -1812,7 +1863,7 @@ public sealed class SettingsWindow : Window
 
         var buildBy = new TextBlock
         {
-            Text = "Build by Xianfish",
+            Text = "Xianfish & Hydrotessera",
             FontSize = 13,
             FontWeight = FontWeights.SemiBold,
             HorizontalAlignment = HorizontalAlignment.Center,
