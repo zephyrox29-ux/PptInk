@@ -99,6 +99,6 @@ public class ManifestValidatorTests
         {
             Elements = new[] { new PanelElement { Type = "button", Text = "开始", OnEvent = "onToggle" } },
         };
-        Assert.Empty(ManifestValidator.Validate(m, EntryYes).Where(i => i.IsError));
+        Assert.DoesNotContain(ManifestValidator.Validate(m, EntryYes), i => i.IsError);
     }
 }

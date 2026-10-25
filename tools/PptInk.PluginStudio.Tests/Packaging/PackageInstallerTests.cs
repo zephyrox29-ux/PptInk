@@ -37,7 +37,8 @@ public class PackageInstallerTests
             p.Manifest.Id = "bad id";
             Assert.False(new PackageInstaller(root).Install(p, out var err));
             Assert.False(string.IsNullOrEmpty(err));
-            Assert.Empty(Directory.GetDirectories(root, ".staging-*"));
+            if (Directory.Exists(root))
+                Assert.Empty(Directory.GetDirectories(root, ".staging-*"));
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
