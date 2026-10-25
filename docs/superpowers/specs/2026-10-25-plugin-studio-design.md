@@ -36,8 +36,34 @@ PptInk 支持第三方 Lua 插件：插件包是一个 zip，内含 `manifest.js
 ## 4. 工程结构
 
 ```
-tools/PptInk.PluginStudio/
-  PptInk.PluginStudio.csproj           # net8.0-windows, UseWPF; 引用 AvalonEdit、MoonSharp 2.0.0
+tools/PptInk.PluginStudio.Core/       # 跨平台纯逻辑库（net8.0，无 WPF 依赖）—— 可在此 Linux 环境编译与测试
+  PptInk.PluginStudio.Core.csproj      # 引用 MoonSharp 2.0.0（纯托管，跨平台）
+  Models/
+    PluginKind.cs
+    PluginManifest.cs
+    PanelDecl.cs
+    PanelElement.cs
+    ProjectModel.cs                    # manifest + script + resources
+  Validation/
+    ManifestValidator.cs               # 对齐主程序 ValidateManifest/NormalizeManifest
+    ValidationIssue.cs                 # 级别(错误/警告) + 字段定位 + 文案
+    LuaSyntaxChecker.cs                # MoonSharp LoadString 仅解析，返回行列错误
+    CrossConsistencyChecker.cs         # API 权限/回调定义/入口存在性
+  Lua/
+    LuaApiCatalog.cs                   # 注入 API 签名与面板回调名清单
+  Packaging/
+    PackageBuilder.cs                  # 打包 zip
+    PackageInstaller.cs                # 安装到插件目录（备份/替换/回滚；根目录可注入以便测试）
+    PackageImporter.cs                 # 导入 zip/目录 → 工程
+    PackageLayout.cs                   # zip 内结构常量与命名
+  Templates/
+    TemplateLibrary.cs                 # 三类模板 + 示例库（内置示例源码）
+    ReadmeGenerator.cs                 # 生成安装/分享说明
+  AppPaths.cs                          # 路径解析（可通过环境变量覆盖根目录，便于跨平台测试）
+  PluginStudioLog.cs                   # 轻量日志接口（默认写文件，可注入 NullLogger）
+
+tools/PptInk.PluginStudio/             # WPF 界面（net8.0-windows, UseWPF）—— 需 Windows 构建
+  PptInk.PluginStudio.csproj           # 引用 Core + AvalonEdit
   App.xaml / App.xaml.cs
   Views/
     WizardWindow.xaml                  # 新建向导
@@ -54,26 +80,19 @@ tools/PptInk.PluginStudio/
     BasicInfoViewModel.cs
     PanelDesignerViewModel.cs
     ValidationViewModel.cs
-  Models/
-    PluginKind.cs
-    PluginManifest.cs
-    PanelDecl.cs
-    PanelElement.cs
-    ProjectModel.cs                    # manifest + script + resources
   Services/
-    ManifestValidator.cs               # 对齐主程序 ValidateManifest/NormalizeManifest
-    LuaService.cs                      # AvalonEdit 宿主 + MoonSharp parse 语法检查 + 补全
-    LuaApiCatalog.cs                   # 注入 API 签名与面板回调名清单
-    PackageBuilder.cs                  # 打包 zip
-    PackageInstaller.cs                # 安装到插件目录（备份/替换/回滚）
-    PackageImporter.cs                 # 导入 zip/目录 → 工程
-    TemplateLibrary.cs                 # 三类模板 + 示例库
-    ReadmeGenerator.cs                 # 生成安装/分享说明
-    AppLog.cs                          # 工具日志
+    AvalonLuaEditorHost.cs             # AvalonEdit 宿主（高亮/补全/跳转定位）
+    FileDialogs.cs
+    PreviewRenderer.cs                 # 简化预览渲染（按 manifest 画近似面板）
   Assets/                              # 图标、模板资源
-tools/PptInk.PluginStudio.Tests/       # xUnit：纯逻辑测试
-PptInk.sln                             # 加入上述两个项目
+
+tools/PptInk.PluginStudio.Tests/       # xUnit：只引用 Core → 可在 Linux/Windows 均编译运行
+PptInk.sln                             # 加入上述三个项目
 ```
+
+> 拆分理由：WPF（`net8.0-windows`）只能在 Windows 上构建；把模型、校验、打包、导入、
+> 模板等**纯逻辑放进跨平台 Core 库**，可在开发机上（含本次 Linux 环境）用 `dotnet build`/
+> `dotnet test` 真实验证，界面层留待 Windows 构建。这也是能在此环境"完成验证"的关键。
 
 约定：`Models` 与 `ManifestValidator` 自包含一份（不引用主程序程序集），
 文件头注明"同步来源：`src/PptInk.App/Plugins/PluginManager.cs::ValidateManifest / NormalizeManifest`，
@@ -188,7 +207,10 @@ PptInk.sln                             # 加入上述两个项目
 
 ## 13. 构建与交付
 
-- 新增 `tools/PptInk.PluginStudio`、`tools/PptInk.PluginStudio.Tests` 并加入 `PptInk.sln`。
+- 新增 `tools/PptInk.PluginStudio.Core`（跨平台逻辑库）、`tools/PptInk.PluginStudio`（WPF 界面）、
+  `tools/PptInk.PluginStudio.Tests`（xUnit）并加入 `PptInk.sln`。
+- 验证分层：Core + Tests 可在 Linux/Windows 用 `dotnet build` / `dotnet test` 验证；
+  WPF 界面需在 Windows 用 `dotnet build PptInk.sln` 验证。
 - 分支 `feat/plugin-studio` → 推送 → PR →（用户验证后）合并到 `main`。
 - 依赖：AvalonEdit（编辑器）、MoonSharp 2.0.0（语法解析）。
 
