@@ -144,6 +144,12 @@ public sealed class TrayIconController : IDisposable
         }
         // v1.1.1：记录自建 HICON，Dispose 时 DestroyIcon —— Icon.FromHandle 的句柄
         // 不随 Icon/NotifyIcon 释放，每次重建托盘泄漏一枚 GDI 句柄。
+        // 修复：重建前先销毁上一枚自建 HICON，否则本方法被再次调用时旧句柄被直接覆盖而泄漏。
+        if (_ownedHicon != IntPtr.Zero)
+        {
+            try { DestroyIcon(_ownedHicon); } catch { }
+            _ownedHicon = IntPtr.Zero;
+        }
         _ownedHicon = bmp.GetHicon();
         return Icon.FromHandle(_ownedHicon);
     }
