@@ -35,7 +35,8 @@ public static class DiagnosticsExporter
             {
                 var entry = zip.CreateEntry("config.json");
                 using var es = entry.Open();
-                File.OpenRead(configPath).CopyTo(es);
+                using var src = File.OpenRead(configPath);
+                src.CopyTo(es);
             }
 
             var logDir = Path.Combine(Root, "logs");
@@ -46,7 +47,8 @@ public static class DiagnosticsExporter
                 {
                     var entry = zip.CreateEntry("logs/" + Path.GetFileName(file));
                     using var es = entry.Open();
-                    File.OpenRead(file).CopyTo(es);
+                    using var src = File.OpenRead(file);
+                    src.CopyTo(es);
                 }
             }
         }

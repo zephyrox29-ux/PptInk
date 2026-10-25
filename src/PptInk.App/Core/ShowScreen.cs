@@ -111,7 +111,7 @@ public static class ShowScreen
             // 调显示设置 / RDP 重连）句柄不变 → DpiScale/Bounds 永不刷新，也不广播
             // ScreenChanged → 消费方（档案门禁、手势区、插件截图）拿到陈旧口径。
             // 改为「监视器 / 缩放 / 边界」任一变化即更新并广播（消费方幂等处理）。
-            changed = _monitor != mon || _scale != scale || _bounds != bounds || _work != work;
+            changed = _monitor != mon || _scale != scale || _bounds != bounds || _work != work || _phys != phys;
             if (changed) { _bounds = bounds; _work = work; _scale = scale; _monitor = mon; _phys = phys; }
         }
         if (changed)
