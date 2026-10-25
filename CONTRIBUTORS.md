@@ -4,7 +4,7 @@
 
 ## 维护者
 
-- [@xianfish](https://github.com/xianfish) — 项目发起人，v1.0.0 及之前全部版本的开发与真机调校。
+- [Xianfish](https://github.com/zephyrox29-ux) — 项目发起人，v1.0.0 及之前全部版本的开发与真机调校。
 - [Hydrotessera](https://github.com/nullAqua) — v1.1.0 整改与后续开发：核心链路缺陷修复、
   发布链路重建、版本体系统一。
 
