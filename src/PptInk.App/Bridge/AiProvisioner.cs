@@ -24,6 +24,11 @@ namespace PptInk.Bridge;
 /// v1.1.1 安全加固：任何联网步骤前必须经确认回调授权；嵌入式运行时固定 URL + 内置
 /// SHA256/字节数双重校验；NumPy wheel 按 PyPI 元数据 digests.sha256 校验；临时文件
 /// 唯一命名。全程后台线程执行，不冻结 UI；任一步骤失败都返回可读的原因，不静默吞掉。
+///
+/// v1.1.2 环境医生（<see cref="EnsureUsableAsync"/>）：不再"装完 NumPy 就返回成功"。
+/// 逐环节自检 Python → NumPy → 识别模块 → 桥握手 → 合成识别；任一环失败按环节修复
+/// （修正 _pth / 重装 NumPy 1.x / 重建运行时并回滚）后**全量复检**，直到端到端可用。
+/// 与运行时 RestartProcess 使用同一解释器优先级（内置优先）与 UTF-8 启动环境。
 /// </summary>
 internal static class AiProvisioner
 {
@@ -43,76 +48,14 @@ internal static class AiProvisioner
 
     public sealed record Result(bool Ok, string Message);
 
-    /// <summary>确保 AI 环境可用（检测 + 自动补齐 + 复检）。
-    /// confirmNetwork：联网前授权回调（描述将弹给用户的下载说明），返回 false = 用户拒绝。
-    /// 不提供回调 = 一律拒绝联网（调用方必须显式授权，不存在静默下载路径）。</summary>
-    public static async Task<Result> EnsureAsync(string bridgeDir, IProgress<string>? progress, CancellationToken ct,
-        Func<string, Task<bool>>? confirmNetwork = null)
-    {
-        string bundled = Path.Combine(bridgeDir, "python", "python.exe");
-        // 一次配置会话只询问一次：嵌入式运行时与 NumPy 两步下载合并授权
-        bool? granted = null;
-        async Task<bool> EnsureNetworkAllowed(string what)
-        {
-            if (granted is bool g) return g;
-            if (confirmNetwork is null) { granted = false; return false; }
-            granted = await confirmNetwork(what);
-            return granted.Value;
-        }
-
-        try
-        {
-            // 1) 内置运行时 + NumPy 齐备 —— 便携包默认路径
-            if (File.Exists(bundled))
-            {
-                if (await HasNumpyAsync(bundled, ct))
-                    return new Result(true, "内置 Python 运行时可用");
-                progress?.Report("内置 Python 缺少 NumPy，正在安装……");
-                if (await TryInstallNumpyAsync(bundled, bridgeDir, ct,
-                        () => EnsureNetworkAllowed($"AI 功能需要联网下载 NumPy（来自 PyPI，约 16MB），安装到程序目录：{bridgeDir}\\python。")) &&
-                    await HasNumpyAsync(bundled, ct))
-                    return new Result(true, "已为内置 Python 安装 NumPy");
-            }
-
-            // 2) 系统 Python：只读使用（已有 NumPy 才用）。v1.1.1：不再对系统 Python 执行
-            //    pip install —— 修改用户机器的全局环境必须用户显式自己动手，工具不做。
-            foreach (var sys in new[] { "python", "python3", "py" })
-            {
-                if (!await HasPythonAsync(sys, ct)) continue;
-                if (await HasNumpyAsync(sys, ct))
-                    return new Result(true, $"使用系统 Python（{sys}，已含 NumPy）");
-            }
-
-            // 3) 全无 —— 征得同意后下载嵌入式运行时 + NumPy（只写进 bridge\python，不动系统）
-            if (!await EnsureNetworkAllowed(
-                    $"AI 功能需要联网下载：\n" +
-                    $"· Python 3.12 嵌入式运行时（python.org，约 11MB）\n" +
-                    $"· NumPy 计算库（PyPI，约 16MB）\n" +
-                    $"安装位置：{bridgeDir}\\python（不影响系统环境）。\n下载内容将校验 SHA256 指纹。"))
-                return new Result(false, "已取消下载。可手动安装 Python 3.10+ 与 NumPy 后重试，AI 功能暂不启用（不影响书写批注）。");
-
-            progress?.Report("未检测到可用 Python，正在下载嵌入式运行时……");
-            if (await ProvisionBundledAsync(bridgeDir, progress, ct) && await HasNumpyAsync(bundled, ct))
-                return new Result(true, "已下载并配置嵌入式 Python 运行时");
-
-            return new Result(false, "无法自动配置 AI 环境（网络不可用、下载校验失败或权限不足）。请手动安装 Python 3.10+ 与 NumPy。");
-        }
-        catch (OperationCanceledException)
-        {
-            return new Result(false, "AI 环境配置已取消。");
-        }
-        catch (Exception ex)
-        {
-            return new Result(false, $"AI 环境配置失败：{ex.Message}");
-        }
-    }
+    
 
     /// <summary>指定解释器能否成功 `import numpy`。</summary>
     private static async Task<bool> HasNumpyAsync(string pythonExe, CancellationToken ct)
     {
         try
         {
-            var psi = new ProcessStartInfo(pythonExe, "-c \"import numpy\"")
+            var psi = new ProcessStartInfo(pythonExe, "-c \"import numpy as _n; _n.zeros(2).sum(); print(_n.__version__)\"")
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -180,7 +123,7 @@ internal static class AiProvisioner
         // pip 路径（完整嵌入式发行版若带 pip）
         try
         {
-            var psi = new ProcessStartInfo(pythonExe, "-m pip install --no-warn-script-location numpy")
+            var psi = new ProcessStartInfo(pythonExe, "-m pip install --no-warn-script-location \"numpy>=1.24,<2.0\"")
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -229,8 +172,11 @@ internal static class AiProvisioner
             using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
             http.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
 
-            // PyPI JSON：挑一个 cp312 win_amd64 的 wheel + 官方 digest
-            string json = await http.GetStringAsync(PyPiNumpyJson, ct);
+            // PyPI JSON：优先固定 1.26.4（cp312 win_amd64 有轮子，避免 numpy 2.x API 变化）；
+            // 固定版本不可达时回退最新版，仍按 cp312 win_amd64 挑选 + sha256 校验。
+            string json;
+            try { json = await http.GetStringAsync("https://pypi.org/pypi/numpy/1.26.4/json", ct); }
+            catch { json = await http.GetStringAsync(PyPiNumpyJson, ct); }
             string? wheelUrl = null;
             string? wheelSha256 = null;
             using (var doc = JsonDocument.Parse(json))
@@ -312,9 +258,9 @@ internal static class AiProvisioner
             progress?.Report("解压运行时……");
             ZipFile.ExtractToDirectory(tmpZip, pyDir, overwriteFiles: true);
 
-            // 配置 _pth：启用 site-packages（嵌入式默认关闭）
-            string pth = Path.Combine(pyDir, "python312._pth");
-            File.WriteAllText(pth, "python312.zip\r\n.\r\nLib\\site-packages\r\nimport site\r\n");
+            // 配置 _pth：启用 site-packages（嵌入式默认关闭）。不写死 python312._pth，
+            // 按解压出的实际文件名修正，避免版本/文件名变化导致 site-packages 不生效。
+            TryRepairPth(pyDir);
             Directory.CreateDirectory(Path.Combine(pyDir, "Lib", "site-packages"));
 
             progress?.Report("下载并安装 NumPy……");
@@ -326,6 +272,221 @@ internal static class AiProvisioner
         finally
         {
             if (tmpZip is not null) { try { File.Delete(tmpZip); } catch { } }
+        }
+    }
+
+    // ———————— v1.1.2：逐环节自检 + 修复循环（AI 环境医生） ————————
+
+    /// <summary>
+    /// 全面自检并修复，直到「端到端可用」：Python 可运行 → NumPy 可用 → 识别模块可导入 →
+    /// 桥握手 → 合成圆形识别。任何一环失败都会触发对应修复并**重新全量复检**，
+    /// 而不是"装完 NumPy 就返回成功、随后握手继续报错"。
+    /// 修复手段：修正 _pth → 重装 NumPy（固定 1.x）→ 重建嵌入式运行时（失败回滚旧目录）。
+    /// 每轮候选解释器与运行时 RestartProcess 保持一致（内置 python.exe 优先，其次 PATH 的 python）。
+    /// </summary>
+    public static async Task<Result> EnsureUsableAsync(string bridgeDir, IProgress<string>? progress,
+        Func<string, Task<bool>>? confirmNetwork, CancellationToken ct)
+    {
+        var log = new List<string>();
+        string? lastError = null;
+        var repairs = new HashSet<string>(StringComparer.Ordinal);
+        bool? granted = null;
+        async Task<bool> EnsureNetworkAllowed(string what)
+        {
+            if (granted is bool g) return g;
+            if (confirmNetwork is null) { granted = false; return false; }
+            granted = await confirmNetwork(what);
+            return granted.Value;
+        }
+
+        var script = Path.Combine(bridgeDir, "ink_bridge.py");
+        var bundled = Path.Combine(bridgeDir, "python", "python.exe");
+
+        for (int round = 1; round <= 10 && !ct.IsCancellationRequested; round++)
+        {
+            progress?.Report($"AI 环境自检（第 {round} 轮）……");
+
+            if (!File.Exists(script))
+                return new Result(false, "找不到桥接脚本：" + script + "（请重新生成包含 bridge 目录的完整便携包）");
+
+            // 与运行时严格一致：内置 python.exe 存在就只用它（RestartProcess 也优先它），否则用 PATH 的 python。
+            // 不能"内置坏了却退到系统 python"——那样自检能过、运行时仍用坏内置 → 必然握手失败。
+            var candidates = new List<string>();
+            if (File.Exists(bundled)) candidates.Add(bundled);
+            else candidates.Add("python");
+
+            string? usable = null;
+            foreach (var exe in candidates)
+            {
+                if (!await HasPythonAsync(exe, ct)) { log.Add($"{exe}：无法运行"); continue; }
+                if (!await HasNumpyAsync(exe, ct)) { log.Add($"{exe}：NumPy 不可用"); continue; }
+                if (!await ImportOkAsync(exe, "pptink_recog", bridgeDir, ct)) { log.Add($"{exe}：识别模块导入失败"); continue; }
+                usable = exe;
+                break;
+            }
+
+            if (usable is not null)
+            {
+                progress?.Report("依赖齐全，正在验证桥握手与识别……");
+                var probe = await BridgeProbe.RunAsync(bridgeDir, script, usable, ct);
+                foreach (var s in probe.Stages) log.Add($"  · {s.Name}：{(s.Ok ? "通过" : "失败")} {s.Detail}");
+                if (probe.Ok)
+                {
+                    var detail = log.Count == 0 ? "" : Environment.NewLine + string.Join(Environment.NewLine, log.TakeLast(12));
+                    return new Result(true, "AI 环境可用。" + detail);
+                }
+                lastError = probe.Message;
+            }
+            else
+            {
+                lastError = "没有找到「Python + NumPy + 识别模块」齐备的解释器";
+            }
+
+            bool repaired = await RepairAsync(bridgeDir, bundled, repairs, progress, EnsureNetworkAllowed, ct, log);
+            if (!repaired) break;
+        }
+
+        return new Result(false,
+            "AI 环境仍不可用（已尝试自动修复）。" + Environment.NewLine +
+            string.Join(Environment.NewLine, log.TakeLast(20)) + Environment.NewLine +
+            "最后错误：" + lastError);
+    }
+
+    /// <summary>按当前状态选择并执行一种修复；返回是否真的做了动作（否则停止循环）。</summary>
+    private static async Task<bool> RepairAsync(string bridgeDir, string bundled, HashSet<string> repairs,
+        IProgress<string>? progress, Func<string, Task<bool>> ensureNetwork, CancellationToken ct, List<string> log)
+    {
+        string pyDir = Path.GetDirectoryName(bundled) ?? Path.Combine(bridgeDir, "python");
+
+        if (!File.Exists(bundled))
+        {
+            if (!repairs.Add("provision")) return false;
+            if (!await ensureNetwork($"AI 需要联网下载嵌入式 Python 3.12（约 11MB）与 NumPy（约 16MB），安装到 {bridgeDir}\\python（不影响系统环境）。"))
+                return false;
+            progress?.Report("下载并配置嵌入式 Python 运行时……");
+            bool ok = await ProvisionBundledAsync(bridgeDir, progress, ct) && await HasNumpyAsync(bundled, ct);
+            log.Add(ok ? "已下载并配置嵌入式 Python + NumPy" : "嵌入式运行时下载/配置失败");
+            return ok;
+        }
+
+        // 内置运行时存在：修正 _pth → 重装 NumPy → 重建运行时（各尝试一次，避免死循环）
+        if (repairs.Add("pth") && TryRepairPth(pyDir))
+        {
+            log.Add("已修正嵌入式运行时 _pth（启用 site-packages / import site）");
+            return true;
+        }
+        if (repairs.Add("numpy"))
+        {
+            if (!await ensureNetwork($"AI 需要联网重新安装 NumPy（来自 PyPI，约 16MB），安装到 {bridgeDir}\\python。"))
+                return false;
+            progress?.Report("重新安装 NumPy……");
+            bool ok = await TryInstallNumpyAsync(bundled, bridgeDir, ct, () => ensureNetwork("重新安装 NumPy"))
+                      && await HasNumpyAsync(bundled, ct);
+            log.Add(ok ? "已重新安装 NumPy" : "NumPy 重装失败");
+            if (ok) return true;
+        }
+        if (repairs.Add("reprovision"))
+        {
+            if (!await ensureNetwork($"AI 运行时可能已损坏，需要联网重新下载嵌入式 Python（约 11MB）与 NumPy（约 16MB）。安装位置：{bridgeDir}\\python。"))
+                return false;
+            progress?.Report("重建嵌入式运行时……");
+            bool ok = await TryReprovisionAsync(bridgeDir, progress, ct);
+            log.Add(ok ? "已重建嵌入式 Python 运行时" : "重建运行时失败（已回滚旧目录）");
+            return ok;
+        }
+        return false;
+    }
+
+    /// <summary>解释器能否导入指定模块（工作目录=bridge 目录，保证能找到本地识别模块）。</summary>
+    private static async Task<bool> ImportOkAsync(string pythonExe, string module, string workDir, CancellationToken ct)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(pythonExe, $"-c \"import {module}\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WorkingDirectory = workDir,
+            };
+            BridgeProbe.ApplyPythonEnv(psi);
+            using var p = Process.Start(psi);
+            if (p is null) return false;
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(25));
+            try
+            {
+                await p.WaitForExitAsync(cts.Token);
+                return p.ExitCode == 0;
+            }
+            catch
+            {
+                try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+                return false;
+            }
+        }
+        catch { return false; }
+    }
+
+    /// <summary>确保嵌入式 _pth 启用 site-packages（原实现写死 python312._pth）。返回是否改动。</summary>
+    private static bool TryRepairPth(string pyDir)
+    {
+        try
+        {
+            if (!Directory.Exists(pyDir)) return false;
+            var pth = Directory.GetFiles(pyDir, "python*._pth").FirstOrDefault()
+                      ?? Path.Combine(pyDir, "python312._pth");
+            var zipName = Path.GetFileNameWithoutExtension(pth) + ".zip";
+            var wanted = new[] { zipName, ".", "Lib\\site-packages", "import site" };
+
+            var lines = File.Exists(pth)
+                ? File.ReadAllLines(pth).Select(l => l.Trim()).Where(l => l.Length > 0)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                : new List<string>();
+
+            bool changed = false;
+            foreach (var w in wanted)
+                if (!lines.Contains(w, StringComparer.OrdinalIgnoreCase)) { lines.Add(w); changed = true; }
+            if (!changed) return false;
+
+            File.WriteAllText(pth, string.Join("\r\n", lines) + "\r\n");
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>重建嵌入式运行时：旧目录改名备份 → 重新下载配置 → 失败回滚。</summary>
+    private static async Task<bool> TryReprovisionAsync(string bridgeDir, IProgress<string>? progress, CancellationToken ct)
+    {
+        string pyDir = Path.Combine(bridgeDir, "python");
+        string backup = pyDir + ".broken-" + Guid.NewGuid().ToString("N");
+        bool moved = false;
+        try
+        {
+            if (Directory.Exists(pyDir))
+            {
+                Directory.Move(pyDir, backup);
+                moved = true;
+            }
+            bool ok = await ProvisionBundledAsync(bridgeDir, progress, ct)
+                      && await HasNumpyAsync(Path.Combine(pyDir, "python.exe"), ct);
+            if (ok)
+            {
+                if (moved) { try { Directory.Delete(backup, true); } catch { } }
+                return true;
+            }
+            try { if (Directory.Exists(pyDir)) Directory.Delete(pyDir, true); } catch { }
+            if (moved && Directory.Exists(backup))
+            {
+                try { Directory.Move(backup, pyDir); } catch { }
+            }
+            return false;
+        }
+        catch
+        {
+            try { if (moved && Directory.Exists(backup) && !Directory.Exists(pyDir)) Directory.Move(backup, pyDir); } catch { }
+            return false;
         }
     }
 

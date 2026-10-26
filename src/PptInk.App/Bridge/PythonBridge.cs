@@ -100,22 +100,22 @@ public sealed class PythonBridge : IDisposable
         if (!hasBundled)
             Core.AppLog.Instance.Warn("AI 桥使用系统 Python（bridge\\python\\python.exe 不存在）；若系统 Python 缺 NumPy，识别会失败。请运行设置中心「快速检测 AI 功能」验证依赖。");
 
-        _process = new Process
+        var psi = new ProcessStartInfo
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = pythonExe,
-                Arguments = $"-u \"{script}\"",   // -u：禁用 stdout 缓冲，协议行即时到达
-                WorkingDirectory = BridgeDir,
-                CreateNoWindow = true,           // 静默：无黑框
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardInputEncoding = System.Text.Encoding.UTF8,
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-            },
+            FileName = pythonExe,
+            Arguments = $"-u \"{script}\"",   // -u：禁用 stdout 缓冲，协议行即时到达
+            WorkingDirectory = BridgeDir,
+            CreateNoWindow = true,           // 静默：无黑框
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardInputEncoding = System.Text.Encoding.UTF8,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8,
         };
+        BridgeProbe.ApplyPythonEnv(psi);   // v1.1.2：与自检同口径，强制 UTF-8 / 无缓冲
+        _process = new Process { StartInfo = psi };
         try
         {
             _process.Start();
@@ -185,131 +185,14 @@ public sealed class PythonBridge : IDisposable
         if (!File.Exists(script))
             return $"AI 检测失败：找不到桥接脚本。{Environment.NewLine}预期位置：{script}{Environment.NewLine}请重新生成包含 bridge 目录的完整便携包。";
 
-        progress?.Report("正在检测运行环境……");
-        // v1.0.0：先检测一次；失败则自动配置运行环境（v1.1.1 起联网下载需用户确认），再复检一次。
-        var first = await ProbeAsync(dir, script, cancellationToken);
-        if (first.Ok) return first.Message;
-
-        progress?.Report("环境不完整，自动配置中……");
-        var provision = await AiProvisioner.EnsureAsync(dir, progress, cancellationToken, confirmNetwork);
-        if (!provision.Ok)
-            return first.Message + Environment.NewLine + Environment.NewLine +
-                   "自动配置未能修复：" + provision.Message;
-
-        progress?.Report("配置完成，复检中……");
-        var second = await ProbeAsync(dir, script, cancellationToken);
-        return second.Ok
-            ? second.Message + Environment.NewLine + Environment.NewLine +
-              "（已自动配置运行环境：" + provision.Message + "）"
-            : first.Message + Environment.NewLine + Environment.NewLine +
-              "自动配置后复检仍未通过：" + second.Message;
+        progress?.Report("开始逐环节自检与自动修复……");
+        // v1.1.2：环境医生逐环节自检（Python → NumPy → 识别模块 → 桥握手 → 合成识别），
+        // 任一环失败自动修复并全量复检，直到可用或穷尽修复手段（不再"装完库就报错")。
+        var result = await AiProvisioner.EnsureUsableAsync(dir, progress, confirmNetwork, cancellationToken);
+        return result.Message;
     }
 
-    /// <summary>单次探测：启动短命桥进程，跑一次 hello 握手 + 合成圆识别。(Ok, Message)。</summary>
-    private async Task<(bool Ok, string Message)> ProbeAsync(string dir, string script, CancellationToken cancellationToken)
-    {
-        var bundledPython = Path.Combine(dir, "python", "python.exe");
-        var pythonExe = File.Exists(bundledPython) ? bundledPython : "python";
-        var stderr = new System.Text.StringBuilder();
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = pythonExe,
-                Arguments = $"-u \"{script}\"",
-                WorkingDirectory = dir,
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardInputEncoding = System.Text.Encoding.UTF8,
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-                StandardErrorEncoding = System.Text.Encoding.UTF8,
-            },
-            EnableRaisingEvents = true,
-        };
-        process.ErrorDataReceived += (_, e) =>
-        {
-            if (!string.IsNullOrWhiteSpace(e.Data)) lock (stderr) stderr.AppendLine(e.Data);
-        };
-
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!process.Start()) return (false, "AI 检测失败：无法启动 Python 进程。");
-            process.BeginErrorReadLine();
-            process.StandardInput.AutoFlush = true;
-
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            // v0.9.7：18s → 28s（与 RestartProcess 25s 握手对齐 + 识别预留），
-            // 嵌入式运行时冷启动在病毒扫描/机械硬盘环境下可超过原 18s 阈值。
-            timeout.CancelAfter(TimeSpan.FromSeconds(28));
-            await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new { cmd = "hello", client = BridgeId }));
-            var helloLine = await process.StandardOutput.ReadLineAsync(timeout.Token);
-            if (string.IsNullOrWhiteSpace(helloLine))
-                throw new IOException("桥接进程没有返回握手响应。");
-
-            bool cv2Available = false;
-            using (var helloDoc = JsonDocument.Parse(helloLine))
-            {
-                var hello = helloDoc.RootElement;
-                if (!hello.TryGetProperty("ok", out var ok) || ok.ValueKind != JsonValueKind.True ||
-                    !hello.TryGetProperty("server", out var server) || server.GetString() != "pptink-bridge")
-                    throw new IOException("AI 桥握手协议不匹配。");
-                cv2Available = hello.TryGetProperty("cv2", out var cv2) && cv2.ValueKind == JsonValueKind.True;
-            }
-
-            var points = Enumerable.Range(0, 48)
-                .Select(i => new[]
-                {
-                    Math.Round(100 + 80 * Math.Cos(2 * Math.PI * i / 48), 1),
-                    Math.Round(100 + 80 * Math.Sin(2 * Math.PI * i / 48), 1),
-                }).ToArray();
-            await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new { cmd = "recognize", points }));
-            var recognitionLine = await process.StandardOutput.ReadLineAsync(timeout.Token);
-            if (string.IsNullOrWhiteSpace(recognitionLine))
-                throw new IOException("桥接进程没有返回识别结果。");
-
-            string recognizedShape;
-            double confidence;
-            using (var recDoc = JsonDocument.Parse(recognitionLine))
-            {
-                var rec = recDoc.RootElement;
-                if (!rec.TryGetProperty("ok", out var recOk) || recOk.ValueKind != JsonValueKind.True ||
-                    !rec.TryGetProperty("shape", out var shape) || shape.GetString() != "circle")
-                    throw new IOException("桥接已启动，但合成圆形识别未通过；请检查 NumPy 与识别脚本版本。响应：" + recognitionLine);
-                recognizedShape = shape.GetString() ?? "未知";
-                confidence = rec.TryGetProperty("confidence", out var c) && c.TryGetDouble(out var n) ? n : 0;
-            }
-
-            return (true, string.Join(Environment.NewLine, new[]
-            {
-                "AI 功能检测通过。",
-                "Python 桥：正常握手",
-                "NumPy 与识别算法：正常",
-                $"合成圆形识别：{recognizedShape}，置信度 {confidence:P1}",
-                $"运行时：{(File.Exists(bundledPython) ? "应用内嵌 Python" : "系统 PATH 中的 Python")}",
-                $"可选 OpenCV：{(cv2Available ? "可用" : "未启用（基础识别仍可运行）")}",
-            }));
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return (false, "AI 检测超时：Python/NumPy 启动或识别超过 28 秒。请检查运行时目录、依赖和安全软件拦截（可将 bridge\\ 目录加入杀毒软件白名单）。");
-        }
-        catch (Exception ex)
-        {
-            string diagnostic;
-            lock (stderr) diagnostic = stderr.ToString().Trim();
-            return (false, "AI 检测失败：" + ex.Message + (string.IsNullOrWhiteSpace(diagnostic)
-                ? ""
-                : Environment.NewLine + "Python 输出：" + Environment.NewLine + diagnostic));
-        }
-        finally
-        {
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-        }
-    }
+    
 
     /// <summary>识别结果：形状名 + 先验置信度 + 规整点序列（替换笔迹用）。</summary>
     public sealed record RecognizedShape(string Shape, double Confidence, List<InkPoint> Points);
