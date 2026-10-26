@@ -43,6 +43,12 @@
     <Resource Include="Assets\tray.ico" />
   </ItemGroup>
 
+  <!-- v1.1.2 工具栏图标主题数据：Material Symbols 三套风格的 Path Data（离线内嵌，无运行时网络依赖） -->
+  <ItemGroup>
+    <None Remove="Assets\icons.json" />
+    <EmbeddedResource Include="Assets\icons.json" />
+  </ItemGroup>
+
   <!-- v1.1.1 测试体系：纯函数/历史树等 internal 成员对测试程序集开放 -->
   <ItemGroup>
     <InternalsVisibleTo Include="PptInk.App.Tests" />

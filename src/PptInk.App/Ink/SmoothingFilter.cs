@@ -21,6 +21,8 @@ public sealed class SmoothingFilter
     private readonly double _dropoutMs;      // 断触判定窗口：超过则插值补点
     private readonly List<InkPoint> _smoothed = new(256);
     private InkPoint? _lastRaw;
+    // 实时笔迹开关（v1.1.2）：false = 笔尖原始点直通（0 位置滞后）；true = OneEuro 位置平滑（抗抖）。
+    private readonly bool _positionSmoothing;
 
     // —— OneEuro 滤波状态（v0.9.7）——
     private readonly OneEuroFilter _fx;
@@ -33,11 +35,12 @@ public sealed class SmoothingFilter
     /// v0.9.9 快速触摸书写调参：minCutoff 基准 1.0→1.2（慢写滞后减小），
     /// beta 0.020→0.045（快写时截止频率提得更快，轨迹跟手不滞后、转角不粘滞）。
     /// dCutoff 固定 1.0 Hz（速度估计低通，防速度尖峰污染截止频率）。</summary>
-    public SmoothingFilter(double alpha = 0.45, double maxJumpPx = 480, double dropoutMs = 100)
+    public SmoothingFilter(double alpha = 0.45, double maxJumpPx = 480, double dropoutMs = 100, bool positionSmoothing = true)
     {
         _alpha = Math.Clamp(alpha, 0.05, 0.95);
         _maxJumpPx = maxJumpPx;
         _dropoutMs = dropoutMs;
+        _positionSmoothing = positionSmoothing;
         // OneEuro 参数：minCutoff 随 alpha 线性映射；beta 速度响应。
         double minCutoff = Math.Clamp(1.2 + (_alpha - 0.45) * 3.0, 0.8, 1.8);
         _fx = new OneEuroFilter(minCutoff, beta: 0.045, dCutoff: 1.0);
@@ -79,10 +82,20 @@ public sealed class SmoothingFilter
         else
         {
             var prev = _smoothed[^1];
-            // v0.9.7 OneEuro：低速强平滑防抖、高速弱平滑低延迟。
-            // 时间戳取 QPC 毫秒域（与 InkPoint.TimestampTicks 同源），内部自行换算秒。
-            double sx = _fx.Filter(raw.X, raw.TimestampTicks);
-            double sy = _fy.Filter(raw.Y, raw.TimestampTicks);
+            // 实时笔迹（默认，positionSmoothing=false）：X/Y 直通笔尖原始点，0 位置滞后、落笔即所见；
+            // 平滑笔迹：OneEuro 低速强防抖、高速弱平滑低延迟。压力始终用缓 EMA（避免粗细抖动），
+            // 时间戳取 QPC 毫秒域（与 InkPoint.TimestampTicks 同源），OneEuro 内部自行换算秒。
+            double sx, sy;
+            if (_positionSmoothing)
+            {
+                sx = _fx.Filter(raw.X, raw.TimestampTicks);
+                sy = _fy.Filter(raw.Y, raw.TimestampTicks);
+            }
+            else
+            {
+                sx = raw.X;
+                sy = raw.Y;
+            }
             double sp = prev.Pressure + 0.35 * (raw.Pressure - prev.Pressure);   // 压力仍用缓 EMA（避免粗细抖动）
             _smoothed.Add(new InkPoint(sx, sy, sp, raw.TimestampTicks));
         }
@@ -93,9 +106,9 @@ public sealed class SmoothingFilter
     private void PushSmoothed(in InkPoint p)
     {
         if (_smoothed.Count == 0) { _smoothed.Add(p); return; }
-        // 插值补点走同一 OneEuro 状态机，保持滤波连续性
-        double sx = _fx.Filter(p.X, p.TimestampTicks);
-        double sy = _fy.Filter(p.Y, p.TimestampTicks);
+        // 插值补点走同一状态机；实时模式下位置直通，保持滤波/轨迹连续性口径一致
+        double sx = _positionSmoothing ? _fx.Filter(p.X, p.TimestampTicks) : p.X;
+        double sy = _positionSmoothing ? _fy.Filter(p.Y, p.TimestampTicks) : p.Y;
         var prev = _smoothed[^1];
         double sp = prev.Pressure + 0.35 * (p.Pressure - prev.Pressure);
         _smoothed.Add(new InkPoint(sx, sy, sp, p.TimestampTicks));

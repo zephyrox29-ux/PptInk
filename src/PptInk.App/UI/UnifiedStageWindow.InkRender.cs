@@ -548,7 +548,7 @@ public sealed partial class UnifiedStageWindow
         {
             // 平滑参数与活体书写同源（机型档案）：抬笔精修重绘不跳变（审查修复 #1）
             dc.DrawGeometry(null, MakeWpfPen(s.Pen, engine),
-                s.BuildGeometry(1.0, PenTuning.EffectiveAlpha(engine.Profile.EmaAlpha), engine.Profile.MaxJumpPx * engine.Profile.CanvasScale, engine.Profile.DropoutMs));
+                s.BuildGeometry(1.0, PenTuning.EffectiveAlpha(engine.Profile.EmaAlpha), engine.Profile.MaxJumpPx * engine.Profile.CanvasScale, engine.Profile.DropoutMs, Core.AppConfig.Current.SmoothInk));
             return;
         }
 

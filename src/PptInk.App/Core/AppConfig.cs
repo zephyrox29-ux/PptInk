@@ -182,7 +182,12 @@ public sealed class AppConfig
 
     // ———————— 笔墨高级参数（v1.0.0 高级模式：精调手感） ————————
 
-    /// <summary>平滑强度 0.20~0.80（越大越跟手，越小越稳）：映射 OneEuro 截止频率。</summary>
+    /// <summary>平滑笔迹总开关（默认关 = 实时笔迹）：实时模式用笔尖原始报点即时描边、
+    /// 0 位置滞后、落笔即所见；开启后走 OneEuro 自适应平滑（红外框抗抖，但慢写略滞后）。
+    /// 每笔落笔时读取，实时生效，两方向都可回退。</summary>
+    public bool SmoothInk { get; set; } = false;
+
+    /// <summary>平滑强度 0.20~0.80（越大越跟手，越小越稳）：映射 OneEuro 截止频率（仅平滑模式生效）。</summary>
     public double PenSmoothing { get; set; } = 0.45;
 
     /// <summary>速度笔锋幅度 0.0~1.0：0 = 等宽（无笔锋），1 = 强笔锋（快写明显收细）。</summary>
@@ -221,6 +226,13 @@ public sealed class AppConfig
 
     /// <summary>工具栏整体缩放（0.7~1.6）：大屏远距操作时调大更易按。</summary>
     public double ToolbarScale { get; set; } = 1.0;
+
+    /// <summary>工具栏图标主题（v1.1.2）：classic=原矢量；rounded/outlined/sharp=Material Symbols（更精致直观）。
+    /// 默认 rounded。</summary>
+    public string ToolbarIconTheme { get; set; } = "rounded";
+
+    /// <summary>工具栏图标下显示中文短标签（v1.1.2，默认开）：更直观；关闭则更紧凑。</summary>
+    public bool ToolbarShowLabels { get; set; } = true;
 
     /// <summary>是否在无交互一段时间后将工具栏淡化。触摸优先默认关闭，避免控件看似消失。</summary>
     public bool ToolbarIdleFadeEnabled { get; set; } = false;
@@ -384,6 +396,7 @@ public sealed class AppConfig
             ? Math.Clamp(cfg.EraserRadiusMm, 2.0, 120.0) : 18.0;
         cfg.ShapeRecognizeDelayMs = Math.Clamp(cfg.ShapeRecognizeDelayMs, 150, 5000);
         cfg.ToolbarScale = double.IsFinite(cfg.ToolbarScale) ? Math.Clamp(cfg.ToolbarScale, 0.7, 1.6) : 1.0;
+        cfg.ToolbarIconTheme = cfg.ToolbarIconTheme is "classic" or "rounded" or "outlined" or "sharp" ? cfg.ToolbarIconTheme : "rounded";
         cfg.ToolbarIdleFadeSeconds = double.IsFinite(cfg.ToolbarIdleFadeSeconds)
             ? Math.Clamp(cfg.ToolbarIdleFadeSeconds, 0.5, 15.0) : 2.5;
         cfg.ToolbarIdleOpacity = double.IsFinite(cfg.ToolbarIdleOpacity)

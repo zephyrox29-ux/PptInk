@@ -83,7 +83,7 @@ public sealed partial class Toolbar
             Child = new Path
             {
                 Style = (Style)Application.Current.FindResource("IconFill"),
-                Data = (Geometry)Application.Current.FindResource("IconGrip"),
+                Data = ToolbarFactory.Icon("IconGrip").Data,
                 Width = 18,
                 Height = 18,
                 IsHitTestVisible = false,
@@ -113,16 +113,14 @@ public sealed partial class Toolbar
     private Button BuildToolButton(ToolbarCatalog.Item item)
     {
         var tool = item.Tool!.Value;
+        var icon = ToolbarFactory.Icon(item.Icon);
         var b = new Button
         {
             Style = (Style)Application.Current.FindResource("ToolButtonStyle"),
             ToolTip = item.Tip,
-            Content = new Path
-            {
-                Style = (Style)Application.Current.FindResource("IconFill"),
-                Data = (Geometry)Application.Current.FindResource(item.Icon),
-            },
+            Content = ToolbarFactory.MakeButtonContent(icon, item.Name),
         };
+        ToolbarFactory.ApplyLabelSize(b);
         // v0.7.0 点击即有：按下瞬间执行（微滑不丢点）
         ToolbarFactory.PressWire(b, () => HandleToolClick(tool, b));
         _buttons[item.Id] = b;
@@ -145,16 +143,14 @@ public sealed partial class Toolbar
 
     private Button BuildEraseButton(ToolbarCatalog.Item item)
     {
+        var icon = ToolbarFactory.Icon("IconEraser");
         var b = new Button
         {
             Style = (Style)Application.Current.FindResource("ToolButtonStyle"),
             ToolTip = item.Tip,
-            Content = new Path
-            {
-                Style = (Style)Application.Current.FindResource("IconFill"),
-                Data = (Geometry)Application.Current.FindResource("IconEraser"),
-            },
+            Content = ToolbarFactory.MakeButtonContent(icon, item.Name),
         };
+        ToolbarFactory.ApplyLabelSize(b);
         // 与书写工具同款 toggle：首次点击直接进默认擦除模式，再次点击才弹三模式浮岛
         ToolbarFactory.PressWire(b, () =>
         {
@@ -170,7 +166,7 @@ public sealed partial class Toolbar
 
     private Button BuildSimpleButton(ToolbarCatalog.Item item, string icon, Action onClick)
     {
-        var b = ToolbarFactory.BuildSimple(ToolbarFactory.Icon(icon), item.Tip, onClick);
+        var b = ToolbarFactory.BuildSimple(ToolbarFactory.Icon(icon), item.Tip, onClick, item.Name);
         _buttons[item.Id] = b;
         return b;
     }
@@ -180,8 +176,8 @@ public sealed partial class Toolbar
     private Button BuildExitButton()
     {
         var exit = ToolbarFactory.BuildSimple(ToolbarFactory.Icon("IconStop"), "结束放映",
-            () => ExitShowRequested?.Invoke());
-        if (exit.Content is Path p)
+            () => ExitShowRequested?.Invoke(), "结束");
+        if (ToolbarFactory.IconPathOf(exit.Content) is { } p)
             p.SetResourceReference(Path.FillProperty, "AccentAmberBrush");
         _buttons["nav.exit"] = exit;
         return exit;

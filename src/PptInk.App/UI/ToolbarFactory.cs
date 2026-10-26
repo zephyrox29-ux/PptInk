@@ -118,27 +118,84 @@ public static class ToolbarFactory
     /// icon 为已构建的 Path（IconFill 样式 + 几何由调用方 FindResource）。
     /// 按压脉冲在此统一做（一份真相）——调用方 lambda 只写业务动作，无需捕获按钮自身。
     /// </summary>
-    public static Button BuildSimple(Path icon, string tip, Action onPressed)
+    public static Button BuildSimple(Path icon, string tip, Action onPressed, string? label = null)
     {
         var b = new Button
         {
             Style = (Style)Application.Current.FindResource("ToolButtonStyle"),
             ToolTip = tip,
-            Content = icon,
+            Content = MakeButtonContent(icon, label),
             Focusable = false,
             IsTabStop = false,
         };
+        ApplyLabelSize(b);
         PressWire(b, () => { AnimationKit.PressPulse(b); onPressed(); });
         return b;
     }
 
-    /// <summary>图标 Path 构建（App 级 IconFill 样式 + 几何键）。</summary>
+    /// <summary>图标 Path 构建（App 级 IconFill 样式 + 几何键）。v1.1.2：按 AppConfig.ToolbarIconTheme
+    /// 解析 Material Symbols 主题几何；主题缺失/解析失败回退 Icons.xaml 经典矢量。</summary>
     public static Path Icon(string geometryKey)
-        => new()
+    {
+        Geometry data;
+        var theme = Core.AppConfig.Current.ToolbarIconTheme;
+        if (theme != "classic" && Theme.IconThemes.TryGet(theme, geometryKey, out var themed))
+            data = themed;
+        else
+            data = (Geometry)Application.Current.FindResource(geometryKey);
+        return new Path
         {
             Style = (Style)Application.Current.FindResource("IconFill"),
-            Data = (Geometry)Application.Current.FindResource(geometryKey),
+            Data = data,
         };
+    }
+
+    /// <summary>图标下文字开关（默认开）。</summary>
+    public static bool LabelsOn => Core.AppConfig.Current.ToolbarShowLabels;
+
+    /// <summary>按钮内容：开启标签时 = 图标 + 下方中文短名；否则纯图标。</summary>
+    public static FrameworkElement MakeButtonContent(Path icon, string? label)
+    {
+        if (!LabelsOn || string.IsNullOrWhiteSpace(label)) return icon;
+        icon.Width = 20;
+        icon.Height = 20;
+        icon.HorizontalAlignment = HorizontalAlignment.Center;
+        var text = new TextBlock
+        {
+            Text = label,
+            FontSize = 9.5,
+            Margin = new Thickness(0, 2, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxWidth = 44,
+            IsHitTestVisible = false,
+        };
+        text.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondaryBrush");
+        var stack = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        stack.Children.Add(icon);
+        stack.Children.Add(text);
+        return stack;
+    }
+
+    /// <summary>带标签时按钮加宽加高，给图标下文字留纵向空间。</summary>
+    public static void ApplyLabelSize(Button b)
+    {
+        if (!LabelsOn) return;
+        b.Width = 60;
+        b.Height = 62;
+    }
+
+    /// <summary>取按钮内容里的图标 Path（内容可能是 Path，也可能是图标+文字的 StackPanel）。</summary>
+    public static Path? IconPathOf(object? content) => content switch
+    {
+        Path p => p,
+        Panel panel => panel.Children.OfType<Path>().FirstOrDefault(),
+        _ => null,
+    };
 
     /// <summary>
     /// 朱砂点亮：on = AccentSoft 底 + 图标染强调色；off = 透明底 + 暖白图标。
@@ -149,7 +206,7 @@ public static class ToolbarFactory
     {
         if (Application.Current?.Resources is not { } res) return;
         b.Background = on ? res["AccentSoftBrush"] as Brush ?? Brushes.Transparent : Brushes.Transparent;
-        if (b.Content is Path p)
+        if (IconPathOf(b.Content) is { } p)
             p.Fill = on ? res["AccentBrush"] as Brush ?? Brushes.White : res["TextPrimaryBrush"] as Brush ?? Brushes.White;
     }
 }

@@ -1,0 +1,12 @@
+icons.json — 工具栏图标主题数据
+================================
+
+来源：Material Symbols（Google），经 npm 包 @material-symbols/svg-400 获取，
+      取三套风格（rounded / outlined / sharp）的 24 个图标的 SVG path data。
+许可：Apache License 2.0（https://www.apache.org/licenses/LICENSE-2.0）
+说明：仅内嵌 path data，程序运行时不再联网；如替换/更新，请保持同源许可与署名。
+
+图标键（与 Icons.xaml 一致）：
+  IconTouch IconPen IconHighlighter IconEraser IconLasso IconUndo IconRedo
+  IconAi IconPlugin IconGrip IconPrev IconNext IconStop IconClose IconUp IconDown
+  IconInstall IconExport IconFolder IconReset IconPalette IconSparkle IconCheck IconSwipe
