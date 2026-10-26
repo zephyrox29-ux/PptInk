@@ -162,12 +162,12 @@ public sealed class PythonBridge : IDisposable
     /// 冷启动，UI 线程最长卡 25s。分片轮询让 Dispose 置位后握手立即放弃、锁即刻释放。</summary>
     private void WaitHandshakeOrDispose(Task<string?> readTask)
     {
-        long deadline = Environment.TickCount64 + 25_000;
+        long deadline = Environment.TickCount64 + 35_000;
         while (!readTask.IsCompleted)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(PythonBridge));
             if (Environment.TickCount64 >= deadline)
-                throw new TimeoutException("AI 桥握手超时（25 秒）：Python 或 NumPy 未就绪。请运行设置中心「快速检测 AI 功能」查看具体原因。");
+                throw new TimeoutException("AI 桥握手超时（35 秒）：Python 或 NumPy 未就绪。请运行设置中心「快速检测 AI 功能」查看具体原因。");
             readTask.Wait(100);
         }
     }
