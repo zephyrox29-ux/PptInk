@@ -1262,6 +1262,13 @@ public sealed class SettingsWindow : Window
         writeList.Children.Add(SettingsRow("清空整页后切到", "清空后自动切回哪个工具。智能=上次用的那个。", clearSeg));
         writeList.Children.Add(RowDivider());
 
+        // v1.1.2 实时/平滑笔迹：默认关 = 实时（笔尖原始点即时描边、0 位置滞后）；开 = OneEuro 平滑抗抖。
+        writeList.Children.Add(SwitchRow("平滑笔迹（抗抖）",
+            "默认关＝实时笔迹：落笔即所见、紧贴笔尖、不滞后。开＝平滑笔迹：红外框抖动更稳，但慢写略有滞后。切换即时生效（每笔落笔读取）。",
+            cfg.SmoothInk,
+            v => { cfg.SmoothInk = v; cfg.Save(); }));
+        writeList.Children.Add(RowDivider());
+
         // 识别灵敏度：滑杆 0.75~1.3（严格 ← 标准 → 宽松）。
         // 识别灵敏度：使用网格行约束描述宽度，滑杆保持足够的触摸高度。
         var sensRight = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };

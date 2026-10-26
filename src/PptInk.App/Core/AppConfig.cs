@@ -182,7 +182,12 @@ public sealed class AppConfig
 
     // ———————— 笔墨高级参数（v1.0.0 高级模式：精调手感） ————————
 
-    /// <summary>平滑强度 0.20~0.80（越大越跟手，越小越稳）：映射 OneEuro 截止频率。</summary>
+    /// <summary>平滑笔迹总开关（默认关 = 实时笔迹）：实时模式用笔尖原始报点即时描边、
+    /// 0 位置滞后、落笔即所见；开启后走 OneEuro 自适应平滑（红外框抗抖，但慢写略滞后）。
+    /// 每笔落笔时读取，实时生效，两方向都可回退。</summary>
+    public bool SmoothInk { get; set; } = false;
+
+    /// <summary>平滑强度 0.20~0.80（越大越跟手，越小越稳）：映射 OneEuro 截止频率（仅平滑模式生效）。</summary>
     public double PenSmoothing { get; set; } = 0.45;
 
     /// <summary>速度笔锋幅度 0.0~1.0：0 = 等宽（无笔锋），1 = 强笔锋（快写明显收细）。</summary>

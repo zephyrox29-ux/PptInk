@@ -153,7 +153,7 @@ public sealed class InkPage
                     LineJoin = PenLineJoin.Round,
                 };
                 pen.Freeze();
-                dc.DrawGeometry(null, pen, s.BuildGeometry(pxPerMm, alpha, jump, drop));
+                dc.DrawGeometry(null, pen, s.BuildGeometry(pxPerMm, alpha, jump, drop, AppConfig.Current.SmoothInk));
             }
         }
         var rtb = new RenderTargetBitmap(page.WidthPx, page.HeightPx, 96, 96, PixelFormats.Pbgra32);

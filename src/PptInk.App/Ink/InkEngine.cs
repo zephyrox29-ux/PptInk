@@ -214,7 +214,7 @@ public sealed class InkEngine
                     var pen = Tool == InkTool.Highlighter
                         ? Pen with { Highlighter = true, ColorHex = AppConfig.Current.HighlightColor, ThicknessMm = Math.Max(Pen.ThicknessMm, 8) }
                         : Pen;
-                    _filter = new SmoothingFilter(PenTuning.EffectiveAlpha(Profile.EmaAlpha), Profile.MaxJumpPx * Profile.CanvasScale, Profile.DropoutMs);
+                    _filter = new SmoothingFilter(PenTuning.EffectiveAlpha(Profile.EmaAlpha), Profile.MaxJumpPx * Profile.CanvasScale, Profile.DropoutMs, AppConfig.Current.SmoothInk);
                     _live = new StrokeData(pen);
                     _live.Add(p);
                     _lastRenderedLiveIndex = 0;

@@ -56,7 +56,7 @@ public sealed record PenInfo
 public sealed class StrokeData
 {
     private PathGeometry? _cachedGeometry;
-    private (double Alpha, double Jump, double Drop) _cachedGeoFilterKey;   // 缓存口径：平滑参数变化（切机型）时重建几何
+    private (double Alpha, double Jump, double Drop, bool SmoothPos) _cachedGeoFilterKey;   // 缓存口径：平滑参数/开关变化（切机型/切模式）时重建几何
     private Rect _cachedBounds;
     private double[] _cachedWidths = Array.Empty<double>();
     private int _cachedWidthCount;
@@ -124,9 +124,9 @@ public sealed class StrokeData
     /// <summary>渲染几何：平滑点 → 二次贝塞尔折线（抗锯齿；笔锋变宽由渲染层逐段完成）。
     /// 平滑参数必须与活体书写同源（机型档案 EmaAlpha/MaxJumpPx/DropoutMs，由调用方传入）——
     /// 否则抬笔精修重绘与实时渲染走两套 EMA，笔画形状会在落笔收尾瞬间跳变（审查修复 #1）。</summary>
-    public PathGeometry BuildGeometry(double pxPerMm, double emaAlpha = 0.45, double maxJumpPx = 480, double dropoutMs = 100)
+    public PathGeometry BuildGeometry(double pxPerMm, double emaAlpha = 0.45, double maxJumpPx = 480, double dropoutMs = 100, bool positionSmoothing = true)
     {
-        var filterKey = (emaAlpha, maxJumpPx, dropoutMs);
+        var filterKey = (emaAlpha, maxJumpPx, dropoutMs, positionSmoothing);
         if (_cachedGeometry is not null && _cachedGeoFilterKey == filterKey) return _cachedGeometry;
 
         var g = new PathGeometry();
@@ -136,7 +136,7 @@ public sealed class StrokeData
             return g;
         }
 
-        var f = new SmoothingFilter(emaAlpha, maxJumpPx, dropoutMs);
+        var f = new SmoothingFilter(emaAlpha, maxJumpPx, dropoutMs, positionSmoothing);
         foreach (var p in Points) f.Feed(p);
 
         var fig = new PathFigure { StartPoint = new Point(Points[0].X, Points[0].Y), IsClosed = false };
