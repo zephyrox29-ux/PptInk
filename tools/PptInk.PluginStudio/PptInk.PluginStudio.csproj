@@ -9,7 +9,6 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>PptInk.PluginStudio</AssemblyName>
     <RootNamespace>PptInk.PluginStudio</RootNamespace>
-    <ApplicationIcon></ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,6 +22,8 @@
 
   <ItemGroup>
     <Resource Include="Assets/Lua.xshd" />
+    <!-- 使用说明随程序分发：工具栏「使用说明」按钮据此打开 -->
+    <None Update="USAGE.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

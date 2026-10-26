@@ -65,8 +65,8 @@ internal static class PreviewRenderer
                     double min = el!.Min ?? 0, max = el.Max ?? 100;
                     double val = el.Value ?? min;
                     double frac = max > min ? Math.Clamp((val - min) / (max - min), 0, 1) : 0;
-                    var track = new Border { Height = 6, CornerRadius = new CornerRadius(3), Background = new SolidColorBrush(Color.FromRgb(0x4A, 0x51, 0x5B)) };
-                    var fill = new Border { Width = 120 * frac, HorizontalAlignment = HorizontalAlignment.Left, CornerRadius = new CornerRadius(3), Background = new SolidColorBrush(Color.FromRgb(0x2E, 0x86, 0xDE)) };
+                    var track = new Border { Width = 220, Height = 6, CornerRadius = new CornerRadius(3), Background = new SolidColorBrush(Color.FromRgb(0x4A, 0x51, 0x5B)) };
+                    var fill = new Border { Width = 220 * frac, HorizontalAlignment = HorizontalAlignment.Left, CornerRadius = new CornerRadius(3), Background = new SolidColorBrush(Color.FromRgb(0x2E, 0x86, 0xDE)) };
                     var grid = new Grid { Margin = new Thickness(0, 8, 0, 8) };
                     grid.Children.Add(track);
                     grid.Children.Add(fill);

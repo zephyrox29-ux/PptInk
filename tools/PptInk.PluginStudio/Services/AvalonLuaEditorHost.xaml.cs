@@ -91,6 +91,12 @@ public partial class AvalonLuaEditorHost : UserControl
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Space && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        {
+            ShowCompletion();
+            e.Handled = true;
+            return;
+        }
         if (!CompletionPopup.IsOpen) return;
         if (e.Key is Key.Down) { CompletionList.SelectedIndex = Math.Min(CompletionList.SelectedIndex + 1, CompletionList.Items.Count - 1); e.Handled = true; }
         else if (e.Key is Key.Up) { CompletionList.SelectedIndex = Math.Max(CompletionList.SelectedIndex - 1, 0); e.Handled = true; }

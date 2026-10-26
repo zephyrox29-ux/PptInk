@@ -23,6 +23,10 @@ public static class PackageBuilder
         var snapshot = new ProjectModel { Manifest = manifest, LuaSource = project.LuaSource, Resources = project.Resources };
         issues.AddRange(CrossConsistencyChecker.Check(snapshot));
 
+        foreach (var res in project.Resources)
+            if (PathSafety.IsUnsafeRelative(res.RelativePath))
+                issues.Add(new ValidationIssue(IssueLevel.Error, "resources", $"资源路径非法：{res.RelativePath}"));
+
         var firstError = issues.FirstOrDefault(i => i.IsError);
         if (firstError is not null)
             throw new InvalidOperationException($"校验未通过，无法打包：{firstError.Field} — {firstError.Message}");

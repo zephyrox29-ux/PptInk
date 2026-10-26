@@ -41,8 +41,8 @@ public static class ManifestValidator
         if ((m.Description?.Length ?? 0) > 1000) issues.Add(Err("description", "描述长度 ≤1000"));
         if ((m.Version?.Length ?? 0) > 64) issues.Add(Err("version", "版本号长度 ≤64"));
 
-        if (string.IsNullOrWhiteSpace(m.Entry) || m.Entry.Length > 240 || Path.IsPathRooted(m.Entry))
-            issues.Add(Err("entry", "入口脚本路径非法（不能为空、不能是绝对路径、长度 ≤240）"));
+        if (string.IsNullOrWhiteSpace(m.Entry) || m.Entry.Length > 240 || PathSafety.IsUnsafeRelative(m.Entry))
+            issues.Add(Err("entry", "入口脚本路径非法（不能为空、不能是绝对路径或含 .. ，长度 ≤240）"));
         else if (!entryExists(m.Entry))
             issues.Add(Err("entry", $"入口脚本不存在：{m.Entry}"));
 

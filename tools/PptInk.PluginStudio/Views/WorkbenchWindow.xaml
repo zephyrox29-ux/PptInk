@@ -25,6 +25,7 @@
                     <Button Content="打包 zip" Style="{StaticResource PrimaryButton}" Click="Pack_Click"/>
                     <Button Content="一键安装" Style="{StaticResource PrimaryButton}" Click="Install_Click"/>
                     <Button Content="生成说明" Style="{StaticResource GhostButton}" Click="Readme_Click"/>
+                    <Button Content="使用说明" Style="{StaticResource GhostButton}" Click="Usage_Click"/>
                     <Button Content="操作指引" Style="{StaticResource GhostButton}" Click="Help_Click"/>
                 </WrapPanel>
             </Border>
@@ -195,7 +196,7 @@
         </Grid>
 
         <!-- 操作指引覆盖层 -->
-        <Grid x:Name="HelpOverlay" Background="#CC1F2937" Visibility="Collapsed">
+        <Grid x:Name="HelpOverlay" Grid.RowSpan="3" Background="#CC1F2937" Visibility="Collapsed">
             <Border Background="White" CornerRadius="14" Padding="24" Width="620" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <StackPanel>
                     <TextBlock Text="快速上手 · 六步做出一个插件" FontSize="20" FontWeight="SemiBold"/>

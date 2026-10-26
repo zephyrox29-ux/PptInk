@@ -167,6 +167,8 @@ public partial class WorkbenchWindow : Window
         }
     }
 
+    private void Usage_Click(object sender, RoutedEventArgs e) => Services.HelpDocs.OpenUsageDoc(this);
+
     private void Help_Click(object sender, RoutedEventArgs e) => HelpOverlay.Visibility = Visibility.Visible;
 
     private void HelpClose_Click(object sender, RoutedEventArgs e) => HelpOverlay.Visibility = Visibility.Collapsed;
@@ -311,7 +313,7 @@ public partial class WorkbenchWindow : Window
     private IReadOnlyList<ValidationIssue> ValidateNow()
     {
         var project = BuildProject();
-        var manifest = ManifestValidator.Normalize(CloneForCheck(project.Manifest));
+        var manifest = CloneForCheck(project.Manifest);
         var issues = new List<ValidationIssue>();
         issues.AddRange(ManifestValidator.Validate(manifest, e =>
             string.Equals(e, (manifest.Entry ?? "").Replace('\\', '/'), StringComparison.OrdinalIgnoreCase) ||
