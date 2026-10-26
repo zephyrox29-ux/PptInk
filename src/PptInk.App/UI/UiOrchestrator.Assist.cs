@@ -18,6 +18,20 @@ public sealed partial class UiOrchestrator
 
     // ———————— AI Power 开关（v0.9.2） ————————
 
+    /// <summary>首次开启 AI 时的环境准备任务（自检 → 修复 → 就绪）。准备期间不发识别请求，
+    /// 避免把"正在准备"呈现成"AI 不可用"。</summary>
+    private Task? _aiPrepareTask;
+    private long _aiPrepareLastToast;
+
+    /// <summary>准备阶段提示节流（1.5s）：下载/解压可能持续数分钟，既不刷屏也不静默。</summary>
+    private void ReportAiPrepare(string msg)
+    {
+        long now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _aiPrepareLastToast) < 1500) return;
+        Interlocked.Exchange(ref _aiPrepareLastToast, now);
+        _svc.PythonBridge.StatusSink?.Invoke(msg);
+    }
+
     /// <summary>AI Power 当前状态（工具栏按钮激活态查询）。</summary>
     public bool AiPowerOn => _svc.Config.AiEnabled;
 
@@ -65,7 +79,10 @@ public sealed partial class UiOrchestrator
             }
             if (on)
             {
-                _ = _svc.PythonBridge.EnsureStartedAsync();     // 池线程冷启动，不冻结界面
+                if (_svc.PythonBridge.IsEnvironmentVerified)
+                    _ = _svc.PythonBridge.EnsureStartedAsync();     // 环境已验证：直接池线程冷启动
+                else
+                    _aiPrepareTask ??= EnsureAiReadyAsync();         // 首次：自检/下载/修复全自动，无需人工
             }
             else
             {
@@ -83,9 +100,54 @@ public sealed partial class UiOrchestrator
                     "manual" => "仅点【AI】时识别",
                     _ => "停笔后自动规整",
                 };
-                Toast.Show(on ? $"AI 已开启：{how}。" : "AI 已关闭，本地推理进程已释放。");
+                Toast.Show(on
+                    ? (_svc.PythonBridge.IsEnvironmentVerified
+                        ? $"AI 已开启：{how}。"
+                        : "AI 已开启，正在自动准备运行环境…")
+                    : "AI 已关闭，本地推理进程已释放。");
             }
         });
+    }
+
+    /// <summary>开启 AI 时的一次性环境准备：逐环节自检并自动修复（缺脚本 / 缺库 / 损坏运行时）。
+    /// 只有需要联网下载时弹一次温和确认；结束后用轻提示告知状态，全程不弹错误框。</summary>
+    private async Task EnsureAiReadyAsync()
+    {
+        // 自检/下载/重建期间暂停后台静默自愈（避免两条修复路径并发写 bridge\python）
+        _svc.PythonBridge.SuppressSilentHeal = true;
+        try
+        {
+            var progress = new Progress<string>(ReportAiPrepare);
+            var result = await _svc.PythonBridge.CheckHealthAsync(default, progress, ConfirmAiNetworkForRuntimeAsync);
+            if (result.Ok)
+            {
+                await _svc.PythonBridge.EnsureStartedAsync();
+                _svc.PythonBridge.StatusSink?.Invoke("AI 服务正常运行，识别已就绪。");
+            }
+            else
+            {
+                _svc.PythonBridge.StatusSink?.Invoke("AI 暂时不可用：设置 → AI 功能 可一键准备。");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn("AI 环境准备中断：" + ex.GetType().Name);
+        }
+        finally
+        {
+            _svc.PythonBridge.SuppressSilentHeal = false;
+            _aiPrepareTask = null;
+        }
+    }
+
+    /// <summary>运行时环境准备的联网授权（Information，不是错误框）。</summary>
+    private Task<bool> ConfirmAiNetworkForRuntimeAsync(string reason)
+    {
+        return _app.Dispatcher.InvokeAsync(() =>
+            MessageBox.Show(
+                "AI 需要先准备运行环境。\n\n" + reason +
+                "\n\n点「确定」自动完成，之后无需再操作；点「取消」可稍后在 设置 → AI 功能 里准备。",
+                "AI 运行环境", MessageBoxButton.OKCancel, MessageBoxImage.Information) == MessageBoxResult.OK).Task;
     }
 
     /// <summary>抬笔后排程识别（v1.0.0 时机参数化）：
@@ -152,6 +214,14 @@ public sealed partial class UiOrchestrator
         if (!cfg.AiEnabled)
         {
             if (manual) Toast.Show("AI 未开启。去设置 → 行为里打开。");
+            return;
+        }
+
+        // 首次开启 AI 时环境准备可能仍在进行（下载/解压/重建运行时）。准备期间不发识别
+        // 请求，避免把"正在准备"呈现成"AI 不可用"。
+        if (!_svc.PythonBridge.IsEnvironmentVerified && _aiPrepareTask is { IsCompleted: false })
+        {
+            if (manual) Toast.Show("AI 正在准备运行环境，完成后自动可用。");
             return;
         }
         var engine = _svc.InkEngine;

@@ -49,6 +49,15 @@
     <EmbeddedResource Include="Assets\icons.json" />
   </ItemGroup>
 
+  <!-- v1.1.2 AI 环境自愈：桥脚本/识别模块/配置随程序集内嵌。
+       运行目录（bridge\）被误删、杀软隔离或更新不完整时，自检自动补回，
+       而不是把用户卡在「找不到桥接脚本」的死路上。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\python\ink_bridge.py" LogicalName="PptInk.Bridge.Resources.ink_bridge.py" />
+    <EmbeddedResource Include="..\..\python\pptink_recog.py" LogicalName="PptInk.Bridge.Resources.pptink_recog.py" />
+    <EmbeddedResource Include="..\..\python\recognizer_config.json" LogicalName="PptInk.Bridge.Resources.recognizer_config.json" />
+  </ItemGroup>
+
   <!-- v1.1.1 测试体系：纯函数/历史树等 internal 成员对测试程序集开放 -->
   <ItemGroup>
     <InternalsVisibleTo Include="PptInk.App.Tests" />

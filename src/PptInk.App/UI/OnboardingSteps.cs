@@ -38,9 +38,11 @@ public interface IOnboardingTargets
 {
     Rect? Tool(InkTool tool);
     Rect? UndoRedo();
-    Rect? AiPlugin();
-    Rect? NavBlock();
+    Rect? Ai();
+    Rect? Plugin();
+    Rect? ExitShow();
     Rect? Grip();
+    IReadOnlyList<Rect> NavBlocks();
 }
 
 /// <summary>
@@ -62,6 +64,18 @@ public static class OnboardingCatalog
     private static Rect[] Many(params Rect?[] rects) =>
         [.. rects.Where(r => r is not null).Select(r => r!.Value)];
 
+    /// <summary>单步构造：阅读时长按文案长度自适应（原固定 3.2s，长句没读完就跳走）。</summary>
+    private static OnboardingStep Step(string icon, string title, string body,
+        Func<IReadOnlyList<Rect>?>? targets = null)
+        => new()
+        {
+            Icon = icon,
+            Title = title,
+            Body = body,
+            Targets = targets,
+            StayMs = Math.Max(StepMs, Math.Min(9000, body.Length * 110)),
+        };
+
     public static IReadOnlyList<OnboardingStep> BuildDefault(IOnboardingTargets t) =>
     [
         new OnboardingStep
@@ -73,58 +87,44 @@ public static class OnboardingCatalog
             StayMs = WelcomeMs,
         },
 
-        new OnboardingStep
-        {
-            Icon = "IconPen",
-            Title = "批注",
-            Body = "需要批注？这里是笔，点击一次选中，再次点击展开面板。",
-            Targets = () => Many(t.Tool(InkTool.Pen)),
-            StayMs = StepMs,
-        },
+        Step("IconPen", "批注",
+            "需要批注？点这里是笔；再点一次展开颜色和粗细面板。写字时手掌压屏也不会误画。",
+            () => Many(t.Tool(InkTool.Pen))),
+
+        Step("IconHighlighter", "荧光笔与擦除",
+            "圈重点用【荧光笔】，半透明不挡字。擦除滑过哪儿擦哪儿，轻点一下也能擦掉一个墨点；再点一次可换圈选 / 滑动清空。",
+            () => Many(t.Tool(InkTool.Highlighter), t.Tool(InkTool.EraseStroke))),
+
+        Step("IconNext", "翻页",
+            "左右下角各有一个固定翻页岛，点一下就能翻。翻页笔的上下键、音量键和亮度键也能翻（设置里可关）。",
+            () => t.NavBlocks()),
+
+        Step("IconStop", "结束放映",
+            "讲完点这里退出放映。板书会按你的设置自动留存，误触也不会丢笔迹。",
+            () => Many(t.ExitShow())),
+
+        Step("IconAi", "AI 规整",
+            "手绘的圆、矩形、箭头等，停笔后自动变工整。这个按钮是开关；第一次开启时我会自动把运行环境准备好。",
+            () => Many(t.Ai())),
+
+        Step("IconPlugin", "插件",
+            "计时器、聚光灯、截图等都在这里。也可以稍后在设置 → 插件里安装更多。",
+            () => Many(t.Plugin())),
+
+        Step("IconGrip", "嫌碍事？",
+            "长按这里能把工具栏收成小球；拖动可以把它挪到顺手的位置。设置里还能让它闲置时半透明。",
+            () => Many(t.Grip())),
+
+        Step("IconUndo", "撤销",
+            "基于分支的撤销与恢复，容错度拉满。空历史时按钮会置灰，不会让你误以为坏了。",
+            () => Many(t.UndoRedo())),
 
         new OnboardingStep
         {
-            Icon = "IconHighlighter",
-            Title = "荧光笔与擦除",
-            Body = "圈重点用【荧光笔】，半透明不挡字。擦除滑过哪儿擦哪儿。",
-            Targets = () => Many(t.Tool(InkTool.Highlighter), t.Tool(InkTool.EraseStroke)),
-            StayMs = StepMs,
-        },
-
-        new OnboardingStep
-        {
-            Icon = "IconNext",
-            Title = "翻页",
-            Body = "随时按。不管是翻页笔还是点这里，不管什么模式，PptInk 都会识别到并恰到好处地处理。",
-            Targets = () => Many(t.NavBlock()),
-            StayMs = StepMs,
-        },
-
-        new OnboardingStep
-        {
-            Icon = "IconGrip",
-            Title = "嫌碍事？",
-            Body = "长按这里最小化工具栏。你也可以在设置中让它在闲置时处于透明状态。",
-            Targets = () => Many(t.Grip()),
-            StayMs = StepMs + 900,
-        },
-
-        new OnboardingStep
-        {
-            Icon = "IconUndo",
-            Title = "撤销",
-            Body = "基于分支的撤销与恢复，容错度拉满。",
-            Targets = () => Many(t.UndoRedo()),
-            StayMs = StepMs,
-        },
-
-        new OnboardingStep
-        {
-            Icon = "IconPlugin",
-            Title = "插件",
-            Body = "万能插件！这里可以安装任何您上课可能用到的插件，也可以稍后在设置中安装。",
-            Targets = () => Many(t.AiPlugin()),
-            StayMs = StepMs,
+            Icon = "IconSparkle",
+            Title = "就这些",
+            Body = "忘了也没关系：托盘菜单可以随时重播引导，设置中心每一项都有说明。",
+            StayMs = ClosingMs,
         },
     ];
 }

@@ -46,7 +46,44 @@ internal static class AiProvisioner
     private static readonly string UserAgent =
         "PptInk/" + (typeof(AiProvisioner).Assembly.GetName().Version?.ToString(3) ?? "1.1.2");
 
-    public sealed record Result(bool Ok, string Message);
+    public sealed record Result(bool Ok, string Message, string? PythonExe = null, string? Detail = null);
+
+    /// <summary>随程序集内嵌的桥文件（缺失时自愈写回）。</summary>
+    private static readonly (string Resource, string FileName)[] BridgeScripts =
+    {
+        ("PptInk.Bridge.Resources.ink_bridge.py", "ink_bridge.py"),
+        ("PptInk.Bridge.Resources.pptink_recog.py", "pptink_recog.py"),
+        ("PptInk.Bridge.Resources.recognizer_config.json", "recognizer_config.json"),
+    };
+
+    /// <summary>补回缺失/空文件的桥脚本与识别模块。只补缺，不覆盖用户改过的配置。</summary>
+    private static bool TryRestoreBridgeScripts(string bridgeDir, IProgress<string>? progress, List<string> log)
+    {
+        bool restored = false;
+        try
+        {
+            Directory.CreateDirectory(bridgeDir);
+            var asm = typeof(AiProvisioner).Assembly;
+            foreach (var (resource, name) in BridgeScripts)
+            {
+                string target = Path.Combine(bridgeDir, name);
+                try
+                {
+                    if (File.Exists(target) && new FileInfo(target).Length > 0) continue;
+                    using var stream = asm.GetManifestResourceStream(resource);
+                    if (stream is null) continue;
+                    using var fs = File.Create(target);
+                    stream.CopyTo(fs);
+                    restored = true;
+                    log.Add($"已恢复缺失的桥文件：{name}");
+                    progress?.Report($"已恢复桥文件：{name}");
+                }
+                catch { /* 单个文件失败不阻断其余自愈 */ }
+            }
+        }
+        catch { }
+        return restored;
+    }
 
     
 
@@ -205,7 +242,23 @@ internal static class AiProvisioner
             // 唯一临时名（v1.1.1：固定名并发跑两次校验/删除互踩）+ 校验后解压
             tmpWheel = Path.Combine(Path.GetTempPath(), "pptink-numpy-" + Path.GetRandomFileName() + ".whl");
             await using (var fs = File.Create(tmpWheel))
-                await (await http.GetStreamAsync(wheelUrl, ct)).CopyToAsync(fs, ct);
+            {
+                for (int attempt = 0; ; attempt++)
+                {
+                    try
+                    {
+                        await (await http.GetStreamAsync(wheelUrl, ct)).CopyToAsync(fs, ct);
+                        break;
+                    }
+                    catch when (attempt == 0 && !ct.IsCancellationRequested)
+                    {
+                        // 官方源瞬时故障：清空重下重试一次（不切镜像 —— 避免供应链降级）。
+                        fs.SetLength(0);
+                        fs.Position = 0;
+                        await Task.Delay(700, ct);
+                    }
+                }
+            }
             string actual = await Sha256FileAsync(tmpWheel, ct);
             if (!string.Equals(actual, wheelSha256, StringComparison.OrdinalIgnoreCase))
             {
@@ -240,7 +293,22 @@ internal static class AiProvisioner
             tmpZip = Path.Combine(Path.GetTempPath(), "pptink-python-embed-" + Path.GetRandomFileName() + ".zip");
             progress?.Report("下载嵌入式 Python 运行时……");
             await using (var fs = File.Create(tmpZip))
-                await (await http.GetStreamAsync(EmbedPythonUrl, ct)).CopyToAsync(fs, ct);
+            {
+                for (int attempt = 0; ; attempt++)
+                {
+                    try
+                    {
+                        await (await http.GetStreamAsync(EmbedPythonUrl, ct)).CopyToAsync(fs, ct);
+                        break;
+                    }
+                    catch when (attempt == 0 && !ct.IsCancellationRequested)
+                    {
+                        fs.SetLength(0);
+                        fs.Position = 0;
+                        await Task.Delay(700, ct);
+                    }
+                }
+            }
 
             var fi = new FileInfo(tmpZip);
             if (fi.Length != EmbedPythonBytes)
@@ -304,16 +372,24 @@ internal static class AiProvisioner
 
         for (int round = 1; round <= 10 && !ct.IsCancellationRequested; round++)
         {
-            progress?.Report($"AI 环境自检（第 {round} 轮）……");
+            progress?.Report(round == 1 ? "正在检测 AI 运行环境……" : $"正在复检（第 {round} 轮）……");
 
+            // v1.1.2：脚本缺失/被杀软隔离是最常见的「AI 彻底打不开」，先自愈再检测，
+            // 不再直接返回"请重新生成便携包"这种用户无法执行的结论。
+            if (!File.Exists(script) || new FileInfo(script).Length == 0)
+                TryRestoreBridgeScripts(bridgeDir, progress, log);
             if (!File.Exists(script))
-                return new Result(false, "找不到桥接脚本：" + script + "（请重新生成包含 bridge 目录的完整便携包）");
+                return new Result(false,
+                    "AI 桥接脚本缺失，且内置副本未能写入（通常是程序目录不可写或被安全软件拦截）。",
+                    null, "预期位置：" + script);
 
-            // 与运行时严格一致：内置 python.exe 存在就只用它（RestartProcess 也优先它），否则用 PATH 的 python。
-            // 不能"内置坏了却退到系统 python"——那样自检能过、运行时仍用坏内置 → 必然握手失败。
+            progress?.Report("正在检查 Python 运行时……");
+            // 解释器优先级：内置优先，系统 Python 兜底。选中的解释器会写回运行时
+            // （PythonBridge._verifiedPython），保证「自检用谁，运行就用谁」——
+            // 不再出现"自检通过、运行时仍用坏内置"的错位。
             var candidates = new List<string>();
             if (File.Exists(bundled)) candidates.Add(bundled);
-            else candidates.Add("python");
+            if (!candidates.Contains("python")) candidates.Add("python");
 
             string? usable = null;
             foreach (var exe in candidates)
@@ -331,15 +407,18 @@ internal static class AiProvisioner
                 var probe = await BridgeProbe.RunAsync(bridgeDir, script, usable, ct);
                 foreach (var s in probe.Stages) log.Add($"  · {s.Name}：{(s.Ok ? "通过" : "失败")} {s.Detail}");
                 if (probe.Ok)
-                {
-                    var detail = log.Count == 0 ? "" : Environment.NewLine + string.Join(Environment.NewLine, log.TakeLast(12));
-                    return new Result(true, "AI 环境可用。" + detail);
-                }
+                    return new Result(true, "服务正常运行，AI 识别已就绪。", usable,
+                        log.Count == 0 ? null : string.Join(Environment.NewLine, log.TakeLast(12)));
                 lastError = probe.Message;
+                progress?.Report("握手失败，正在诊断可能的问题……");
+                var failed = probe.Stages.FirstOrDefault(s => !s.Ok);
+                if (failed is not null)
+                    progress?.Report($"问题已确认：{failed.Name}（{failed.Detail}），正在自动修复……");
             }
             else
             {
                 lastError = "没有找到「Python + NumPy + 识别模块」齐备的解释器";
+                progress?.Report("未找到可用解释器，正在准备运行时……");
             }
 
             bool repaired = await RepairAsync(bridgeDir, bundled, repairs, progress, EnsureNetworkAllowed, ct, log);
@@ -347,9 +426,39 @@ internal static class AiProvisioner
         }
 
         return new Result(false,
-            "AI 环境仍不可用（已尝试自动修复）。" + Environment.NewLine +
-            string.Join(Environment.NewLine, log.TakeLast(20)) + Environment.NewLine +
-            "最后错误：" + lastError);
+            $"已自动尝试 {repairs.Count} 项修复，AI 环境仍未就绪。最常见原因是当前网络不可用；恢复网络后点一次重试即可，其余设置无需改动。",
+            null,
+            (log.Count == 0 ? "" : string.Join(Environment.NewLine, log.TakeLast(20)))
+            + Environment.NewLine + "最后错误：" + lastError);
+    }
+
+    /// <summary>
+    /// 运行时握手失败后的静默自愈（v1.1.2，**严禁联网**）：补回缺失脚本 → 修正 _pth →
+    /// 重新探测解释器。供 PythonBridge 在课堂上自动恢复，不弹授权、不打断书写。
+    /// 返回可用解释器（"python" 或绝对路径）；无法自愈返回 null。
+    /// </summary>
+    public static async Task<string?> TrySilentRepairAsync(string bridgeDir, CancellationToken ct)
+    {
+        var log = new List<string>();
+        var script = Path.Combine(bridgeDir, "ink_bridge.py");
+        TryRestoreBridgeScripts(bridgeDir, null, log);
+        if (!File.Exists(script)) return null;
+
+        string bundled = Path.Combine(bridgeDir, "python", "python.exe");
+        string pyDir = Path.GetDirectoryName(bundled) ?? Path.Combine(bridgeDir, "python");
+        if (File.Exists(bundled)) TryRepairPth(pyDir);
+
+        var candidates = new List<string>();
+        if (File.Exists(bundled)) candidates.Add(bundled);
+        candidates.Add("python");
+        foreach (var exe in candidates)
+        {
+            if (!await HasPythonAsync(exe, ct)) continue;
+            if (!await HasNumpyAsync(exe, ct)) continue;
+            if (!await ImportOkAsync(exe, "pptink_recog", bridgeDir, ct)) continue;
+            return exe;
+        }
+        return null;
     }
 
     /// <summary>按当前状态选择并执行一种修复；返回是否真的做了动作（否则停止循环）。</summary>

@@ -88,6 +88,7 @@ public sealed class AppServices
         Detector = new PresentationDetector();
 
         PythonBridge = new PythonBridge(); // 懒拉起：S0 不启动 Python 子进程
+        PythonBridge.StatusSink = Toast.Show;   // 静默自愈成功等状态用轻提示告知，不弹错误框
         Plugins = new PluginManager(InkEngine, PythonBridge);
 
         UiOrchestrator = new UiOrchestrator(app, this);

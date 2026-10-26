@@ -339,6 +339,15 @@ public sealed class InkEngine
                     reason = InvalidateReason.StrokeFinished;
                     break;
                 case InkTool.EraseStroke:
+                    // 轻点未移动：整个手势只有 1 个点，FlushErase 没有任何命中 ——
+                    // 「点一下想擦掉一个墨点」完全没反应。补一次单点圆盘判定（两点重合
+                    // 让距离函数退化为点距，像素/整笔两种模式都走同一条路径）。
+                    if (_erasePath.Count == 1)
+                    {
+                        _erasePath.Add(_erasePath[0]);
+                        _eraser.EraseAlongPath(CurrentPage, _erasePath, Profile.MmToPx(EraserRadiusMm));
+                        _lastEraseExecTick = p.TimestampTicks;
+                    }
                     _eraser.FlushErase(CurrentPage);
                     _erasePath.Clear();
                     reason = InvalidateReason.StrokesRemoved;

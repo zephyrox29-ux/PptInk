@@ -86,10 +86,12 @@ public sealed class EraseService
         {
             lock (RenderGate)
             {
-                var tail = path[^2..];
+                // 快速滑动时两帧橡皮点可能相距几十像素：只按这两个点判定会整段漏擦。
+                // 先把本段加密成 ≤半径一半的采样点，再交给命中检测。
+                var tail = DensifyPath(path[^2..], radiusPx);
                 List<StrokeData> hit = new(4);
                 foreach (var s in page.Strokes)
-                    if (HitByPathFast(s, tail, radiusPx)) hit.Add(s);
+                    if (HitByPathFast(s, tail, radiusPx + PenHalfPx(s))) hit.Add(s);
                 if (hit.Count == 0) return;
                 _pendingOp ??= new EraseStrokesOp(new List<StrokeData>());   // 会话首批建 op，后续批并入（一次撤销整批）
                 RemoveAndGhost(page, hit, _pendingOp);
@@ -114,7 +116,7 @@ public sealed class EraseService
 
         List<StrokeData> hits = new(4);
         foreach (var s in page.Strokes)
-            if (HitByPathFast(s, delta, radiusPx)) hits.Add(s);
+            if (HitByPathFast(s, delta, radiusPx + PenHalfPx(s))) hits.Add(s);
         _pixelPathCursor = path.Count;   // 无论是否命中都推进游标（未命中区已是空白）
         if (hits.Count == 0) return;
 
@@ -122,7 +124,7 @@ public sealed class EraseService
         foreach (var s in hits)
         {
             // 切分仍用<b>当前新增段</b>：已擦区域对应的笔点早已被移除/切走，不会重复出现
-            var keep = SplitStroke(s, delta, radiusPx);
+            var (keep, erased) = SplitStroke(s, delta, radiusPx + PenHalfPx(s));
             // v1.1.0 修复：先记录原索引，保留段原位插回（原先移除后追加表尾，被局部擦除的
             // 旧笔会翻到其后书写的笔之上，遮挡关系与擦除前不一致）
             int idx = page.Strokes.IndexOf(s);
@@ -134,8 +136,14 @@ public sealed class EraseService
                 page.Strokes.Insert(pos, keep[k]);
                 hit.Keeps.Add((pos, keep[k]));
             }
-            s.DissolveProgress = 0; s.DissolveDelay = 0;
-            _ghosts.Add(s);
+            // 只让「被擦掉的局部」消散：原先把整笔塞进 ghost，局部擦除时整条笔迹会闪一下，
+            // 而保留段已经重新出现 —— 这是像素擦除看起来"不真实"的主要来源之一。
+            foreach (var piece in erased)
+            {
+                piece.DissolveProgress = 0;
+                piece.DissolveDelay = 0;
+                _ghosts.Add(piece);
+            }
             _pixelKeep.AddRange(keep);
             batch.Add(hit);
         }
@@ -166,13 +174,15 @@ public sealed class EraseService
         return s.HitByErasePath(path, radiusPx);
     }
 
-    /// <summary>将一笔按擦除轨迹切分：返回保留段（每段 ≥ 2 点；空 = 整笔被擦）。
+    /// <summary>将一笔按擦除轨迹切分：返回保留段（每段 ≥ 2 点）与被擦段（≥ 1 点，供局部消散）。
     /// v0.9.7 性能：逐点判定前先用点与路径包围盒粗筛（BoxContains），
     /// 粗筛通过才做 O(m) 精确扫描 —— 笔上远离橡皮的点 O(1) 跳过。</summary>
-    private static List<StrokeData> SplitStroke(StrokeData s, List<Point> path, double radiusPx)
+    private static (List<StrokeData> Keep, List<StrokeData> Erased) SplitStroke(StrokeData s, List<Point> path, double radiusPx)
     {
         var segs = new List<StrokeData>();
-        StrokeData? cur = null;
+        var cut = new List<StrokeData>();
+        StrokeData? keepCur = null;
+        StrokeData? cutCur = null;
         // 路径包围盒（含半径外扩）：点不在盒内必未被擦
         double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
         foreach (var p in path)
@@ -182,23 +192,99 @@ public sealed class EraseService
         }
         double bx0 = minX - radiusPx, by0 = minY - radiusPx, bx1 = maxX + radiusPx, by1 = maxY + radiusPx;
 
-        foreach (var p in s.Points)
+        foreach (var p in Densify(s, radiusPx))
         {
             // 粗筛：点远在路径包围盒外 → 必未被擦，O(1) 跳过精确扫描
             bool erased = p.X >= bx0 && p.X <= bx1 && p.Y >= by0 && p.Y <= by1
                           && DistPointToPath(p, path) <= radiusPx;
             if (erased)
             {
-                if (cur is not null) { if (cur.Points.Count >= 2) segs.Add(cur); cur = null; }
+                if (keepCur is not null) { if (keepCur.Points.Count >= 2) segs.Add(keepCur); keepCur = null; }
+                cutCur ??= new StrokeData(s.Pen);
+                cutCur.Add(p);
             }
             else
             {
-                cur ??= new StrokeData(s.Pen);
-                cur.Add(p);
+                if (cutCur is not null) { cut.Add(cutCur); cutCur = null; }
+                keepCur ??= new StrokeData(s.Pen);
+                keepCur.Add(p);
             }
         }
-        if (cur is not null && cur.Points.Count >= 2) segs.Add(cur);
-        return segs;
+        if (keepCur is not null && keepCur.Points.Count >= 2) segs.Add(keepCur);
+        if (cutCur is not null) cut.Add(cutCur);
+        // 碎片保护：极端锯齿下被擦段可能非常碎（每段 1 点），ghost 数量会失控；
+        // 超过 8 段就回退为「整笔淡出」，宁可一次整笔淡出也不让渲染层爆量。
+        if (cut.Count > 8)
+        {
+            var whole = new StrokeData(s.Pen);
+            whole.Points.AddRange(s.Points);
+            cut.Clear();
+            cut.Add(whole);
+        }
+        return (segs, cut);
+    }
+
+    /// <summary>橡皮路径段加密（整笔擦除模式）：把两帧之间的大跨距补成连续采样点。</summary>
+    private static List<Point> DensifyPath(List<Point> path, double radiusPx)
+    {
+        if (path.Count < 2) return path;
+        double step = Math.Max(2.0, radiusPx * 0.5);
+        var outPts = new List<Point>(path.Count);
+        for (int i = 0; i < path.Count; i++)
+        {
+            outPts.Add(path[i]);
+            if (i + 1 >= path.Count) break;
+            double dx = path[i + 1].X - path[i].X, dy = path[i + 1].Y - path[i].Y;
+            double len = Math.Sqrt(dx * dx + dy * dy);
+            if (len <= step) continue;
+            int n = Math.Min(16, (int)(len / step));
+            for (int k = 1; k <= n; k++)
+            {
+                double t = (double)k / (n + 1);
+                outPts.Add(new Point(path[i].X + dx * t, path[i].Y + dy * t));
+            }
+        }
+        return outPts;
+    }
+
+    /// <summary>笔迹视觉半宽（文档 px）。橡皮中心到笔中心线的距离必须把笔本身的宽度算进去：
+    /// 只按中心线判定时，粗笔/荧光笔的边缘会留下一条"毛边"擦不掉。</summary>
+    private double PenHalfPx(StrokeData s)
+    {
+        double px = _profile.MmToPx(s.Pen.ThicknessMm) * 0.5;
+        return double.IsFinite(px) && px > 0 ? px : 0;
+    }
+
+    /// <summary>长线段加密：橡皮穿过两个采样点之间的中段时，按「点」判定会整段漏擦
+    /// （快速书写后采样稀疏，表现为擦不干净、只剩零星缺口）。按步长插值出中间采样点
+    /// 再判定；插值点落在线段上，保留段形状不变。</summary>
+    private static List<InkPoint> Densify(StrokeData s, double radiusPx)
+    {
+        var src = s.Points;
+        if (src.Count < 2) return src;
+        double maxStep = Math.Max(2.0, radiusPx * 0.5);
+        var outPts = new List<InkPoint>(src.Count);
+        for (int i = 0; i < src.Count; i++)
+        {
+            var a = src[i];
+            outPts.Add(a);
+            if (i + 1 >= src.Count) break;
+            var b = src[i + 1];
+            double dx = b.X - a.X, dy = b.Y - a.Y;
+            double len = Math.Sqrt(dx * dx + dy * dy);
+            if (len <= maxStep) continue;
+            int n = Math.Min(8, (int)(len / maxStep));
+            for (int k = 1; k <= n; k++)
+            {
+                double t = (double)k / (n + 1);
+                outPts.Add(new InkPoint(
+                    a.X + dx * t,
+                    a.Y + dy * t,
+                    a.Pressure + (b.Pressure - a.Pressure) * t,
+                    a.TimestampTicks + (long)((b.TimestampTicks - a.TimestampTicks) * t)));
+            }
+        }
+        return outPts;
     }
 
     private static double DistPointToPath(InkPoint p, List<Point> path)

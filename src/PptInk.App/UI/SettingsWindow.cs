@@ -1195,31 +1195,55 @@ public sealed class SettingsWindow : Window
 
     // ══════════════════ 行为 ══════════════════
 
+    private TextBlock? _aiStatus;
+
+    /// <summary>AI 状态行：把「检测中 / 定位到问题 / 正在修复 / 服务正常运行」直接写在卡片里，
+    /// 成功失败都不弹错误框 —— 用户看到的是一条可执行的状态，而不是一串技术错误。</summary>
+    private void SetAiStatus(string text, bool ok, bool busy)
+    {
+        if (_aiStatus is null) return;
+        _aiStatus.Text = text;
+        string key = ok ? "AccentBrush" : busy ? "TextSecondaryBrush" : "TextPrimaryBrush";
+        if (TryFindResource(key) is Brush b) _aiStatus.Foreground = b;
+    }
+
     private async Task RunAiHealthCheckAsync(Button button)
     {
-        if (button.IsEnabled == false) return;
+        if (!button.IsEnabled) return;
         button.IsEnabled = false;
-        // v1.0.0：按钮文案实时反映环境配置进度（缺运行时可能下载数分钟，不能让用户以为卡死）
         var label = (button.Content as StackPanel)?.Children.OfType<TextBlock>().FirstOrDefault();
         void SetText(string t) { if (label is not null) label.Text = t; }
         SetText("AI 自检中…");
+        SetAiStatus("正在检测 AI 运行环境……", ok: false, busy: true);
         try
         {
-            var progress = new Progress<string>(msg => SetText("AI 自检中… " + msg));
-            // v1.1.1：联网下载前弹授权（来源/体积/写入位置），拒绝则不联网、AI 不启用
+            // 阶段文案由环境医生逐环节上报：检测 → 定位 → 修复 → 复检 → 就绪
+            var progress = new Progress<string>(msg => SetAiStatus(msg, ok: false, busy: true));
             var result = await _svc.PythonBridge.CheckHealthAsync(default, progress, ConfirmAiNetworkAsync);
-            MessageBox.Show(this, result, "AI 自检结果",
-                MessageBoxButton.OK,
-                result.StartsWith("AI 功能检测通过", StringComparison.Ordinal) ? MessageBoxImage.Information : MessageBoxImage.Warning);
+            if (result.Ok)
+            {
+                SetAiStatus("✓ " + result.Message, ok: true, busy: false);
+                SetText("AI 已就绪");
+                Toast.Show("AI 识别服务已就绪");
+            }
+            else
+            {
+                // 失败不弹错误框：一句话结论留在卡片里，技术详情进日志供排障
+                SetAiStatus(result.Message, ok: false, busy: false);
+                SetText("重试 AI 自检");
+                if (!string.IsNullOrWhiteSpace(result.Detail))
+                    AppLog.Instance.Warn("AI 自检详情：" + Environment.NewLine + result.Detail);
+            }
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "AI 检测过程异常：" + ex.Message, "AI 自检结果", MessageBoxButton.OK, MessageBoxImage.Warning);
+            SetAiStatus("自检被中断，点一下重试即可。", ok: false, busy: false);
+            SetText("重试 AI 自检");
+            AppLog.Instance.Error(ex, "AI 自检异常");
         }
         finally
         {
             button.IsEnabled = true;
-            SetText("快速检测 AI 功能");
         }
     }
 
@@ -1229,8 +1253,9 @@ public sealed class SettingsWindow : Window
         var app = Application.Current;
         if (app is null) return Task.FromResult(false);
         return app.Dispatcher.InvokeAsync(() =>
-            MessageBox.Show(this, reason + "\n\n是否允许本次下载？", "AI 功能需要联网下载",
-                MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK).Task;
+            MessageBox.Show(this,
+                reason + "\n\n点「确定」我会自动下载并装好，不需要你再做别的；点「取消」保留现状，稍后再测也可以。",
+                "AI 功能需要联网下载", MessageBoxButton.OKCancel, MessageBoxImage.Information) == MessageBoxResult.OK).Task;
     }
 
     private FrameworkElement BuildBehaviorPage()
@@ -1472,9 +1497,20 @@ public sealed class SettingsWindow : Window
         Button? aiHealthButton = null;
         aiHealthButton = ActionButton("快速检测 AI 功能", "IconCheck", () => _ = RunAiHealthCheckAsync(aiHealthButton!));
         integList.Children.Add(aiHealthButton);
+
+        // 内联状态行（v1.1.2）：检测 → 定位 → 修复 → 复检 → 就绪，全过程写在卡片里，
+        // 成功失败都不弹错误框。
+        _aiStatus = new TextBlock
+        {
+            Text = "点一下按钮，我会自动把缺少的运行库补齐；完成后这里会显示「服务正常运行」。",
+            FontSize = 11, Margin = new Thickness(4, 4, 12, 0), TextWrapping = TextWrapping.Wrap,
+        };
+        _aiStatus.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondaryBrush");
+        integList.Children.Add(_aiStatus);
+
         var aiHealthNote = new TextBlock
         {
-            Text = "临时启动一次识别进程，验证依赖是否齐全。不改 AI 开关，也不留后台进程。缺运行时会先询问是否联网下载（python.org 与 PyPI，共约 27MB，装进程序目录，不动系统环境）。",
+            Text = "检测全程自动：缺脚本自动补、缺运行库自动装、装坏了自动重建。只有需要联网下载时才问你一次（python.org 与 PyPI，约 27MB，装进程序目录，不动系统环境）。",
             FontSize = 11, Margin = new Thickness(4, 6, 12, 8), TextWrapping = TextWrapping.Wrap,
         };
         aiHealthNote.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondaryBrush");

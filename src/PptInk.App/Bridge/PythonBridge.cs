@@ -40,6 +40,25 @@ public sealed class PythonBridge : IDisposable
     /// 成功握手后清空。</summary>
     public string? LastUnavailableReason { get; private set; }
 
+    /// <summary>本进程内是否已完成一次端到端自检（解释器已选定）。用于「开启 AI 时
+    /// 是否需要先自动准备环境」的判断。</summary>
+    public bool IsEnvironmentVerified => _verifiedPython is not null;
+
+    /// <summary>环境准备（自检/下载/重建）期间暂停后台静默自愈，避免两条修复路径
+    /// 并发写同一目录。</summary>
+    public bool SuppressSilentHeal { get; set; }
+
+    /// <summary>用户可见的状态回调（自愈成功等）：由装配层注入 Toast，避免 Bridge 依赖 UI。</summary>
+    public Action<string>? StatusSink { get; set; }
+
+    /// <summary>自检选中的解释器（"python" 或绝对路径）。运行时优先级与自检一致，
+    /// 避免「自检用系统 Python 通过、运行时仍用坏掉的内置运行时」必然握手失败。</summary>
+    private volatile string? _verifiedPython;
+
+    /// <summary>静默自愈单飞 + 冷却（课堂上失败一次不反复拉进程）。</summary>
+    private int _healInFlight;
+    private long _lastHealTick;
+
     public bool IsRunning => _process is { HasExited: false } && _stdin is not null && _stdout is not null;
 
     /// <summary>依赖缺失（NumPy / 识别模块）专用异常：这类失败不计入崩溃限流，
@@ -99,6 +118,7 @@ public sealed class PythonBridge : IDisposable
                         ? ex.Message
                         : $"AI 桥拉起失败：{ex.Message}";
                     Core.AppLog.Instance.Error(ex, "AI 桥拉起失败（限流或启动超时）");
+                    ScheduleSilentHeal();   // 不联网自愈：补脚本/修 _pth/换解释器，下次识别自动恢复
                 }
             }
         });
@@ -120,9 +140,13 @@ public sealed class PythonBridge : IDisposable
         // 此时握手能过、recognize 会报 "numpy import error" 但 C# 侧只看到 "桥返回空"，
         // 用户收到的是"AI 桥未检测到"而非真正的依赖缺失原因。明确区分两类环境。
         bool hasBundled = File.Exists(bundledPython);
-        var pythonExe = hasBundled ? bundledPython : "python";
+        // 自检已选定解释器 → 运行时必须用同一个（内置坏、系统 Python 可用时尤其关键）。
+        var pythonExe = _verifiedPython is { Length: > 0 } verified &&
+                        (string.Equals(verified, "python", StringComparison.OrdinalIgnoreCase) || File.Exists(verified))
+            ? verified
+            : (hasBundled ? bundledPython : "python");
         if (!File.Exists(script)) throw new FileNotFoundException($"AI 桥脚本缺失：{script}");
-        if (!hasBundled)
+        if (!string.Equals(pythonExe, bundledPython, StringComparison.OrdinalIgnoreCase) && !hasBundled)
             Core.AppLog.Instance.Warn("AI 桥使用系统 Python（bridge\\python\\python.exe 不存在）；若系统 Python 缺 NumPy，识别会失败。请运行设置中心「快速检测 AI 功能」验证依赖。");
 
         var psi = new ProcessStartInfo
@@ -206,6 +230,30 @@ public sealed class PythonBridge : IDisposable
         return "AI 桥的识别模块加载失败（pptink_recog 无法导入）。请在 设置 → AI 功能 → 快速检测 AI 功能 中一键修复。";
     }
 
+    /// <summary>握手失败后的静默自愈（严禁联网）：补脚本 / 修 _pth / 换解释器 ——
+    /// 成功后下一次识别自动用新解释器重启桥。单飞 + 2 分钟冷却，不打断课堂。</summary>
+    private void ScheduleSilentHeal()
+    {
+        if (_disposed || SuppressSilentHeal) return;
+        long now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _lastHealTick) < 120_000) return;
+        if (Interlocked.Exchange(ref _healInFlight, 1) == 1) return;
+        Interlocked.Exchange(ref _lastHealTick, now);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                string? exe = await AiProvisioner.TrySilentRepairAsync(BridgeDir, CancellationToken.None);
+                if (exe is null || _disposed) return;
+                _verifiedPython = exe;
+                LastUnavailableReason = null;
+                StatusSink?.Invoke("AI 服务已自动恢复，识别继续可用。");
+            }
+            catch { /* 静默自愈失败不打扰课堂 */ }
+            finally { Interlocked.Exchange(ref _healInFlight, 0); }
+        });
+    }
+
     /// <summary>预热：让 NumPy 的首次调用开销在课堂开始前付掉。命令行已完整读回，
     /// 不会与后续请求错位；失败只记日志，不改变桥可用状态。</summary>
     private void WarmUp()
@@ -244,19 +292,18 @@ public sealed class PythonBridge : IDisposable
     /// 这样用户即使暂时关闭 AI，也可验证 Python/NumPy/桥协议/识别算法能否完整工作。
     /// confirmNetwork（v1.1.1）：联网下载/装包前的授权回调（拒绝则不联网），见 AiProvisioner。
     /// </summary>
-    public async Task<string> CheckHealthAsync(CancellationToken cancellationToken = default, IProgress<string>? progress = null,
+    public sealed record HealthResult(bool Ok, string Message, string? Detail);
+
+    public async Task<HealthResult> CheckHealthAsync(CancellationToken cancellationToken = default, IProgress<string>? progress = null,
         Func<string, Task<bool>>? confirmNetwork = null)
     {
         var dir = BridgeDir;
-        var script = Path.Combine(dir, "ink_bridge.py");
-        if (!File.Exists(script))
-            return $"AI 检测失败：找不到桥接脚本。{Environment.NewLine}预期位置：{script}{Environment.NewLine}请重新生成包含 bridge 目录的完整便携包。";
-
         progress?.Report("开始逐环节自检与自动修复……");
-        // v1.1.2：环境医生逐环节自检（Python → NumPy → 识别模块 → 桥握手 → 合成识别），
-        // 任一环失败自动修复并全量复检，直到可用或穷尽修复手段（不再"装完库就报错")。
+        // v1.1.2：环境医生逐环节自检（脚本自愈 → Python → NumPy → 识别模块 → 握手 → 合成识别），
+        // 任一环失败自动修复并全量复检，直到可用或穷尽修复手段。
         var result = await AiProvisioner.EnsureUsableAsync(dir, progress, confirmNetwork, cancellationToken);
-        return result.Message;
+        if (result.Ok) _verifiedPython = result.PythonExe;   // 运行时与自检使用同一解释器
+        return new HealthResult(result.Ok, result.Message, result.Detail);
     }
 
     

@@ -145,9 +145,19 @@ public sealed partial class UiOrchestrator
 
     Rect? IOnboardingTargets.Tool(InkTool tool) => _toolbar?.GetToolPhysicalRect(tool);
     Rect? IOnboardingTargets.UndoRedo() => _toolbar?.GetUndoRedoPhysicalRect();
-    Rect? IOnboardingTargets.AiPlugin() => _toolbar?.GetAiPluginPhysicalRect();
+    Rect? IOnboardingTargets.Ai() => _toolbar?.GetButtonPhysicalRect("ai");
+    Rect? IOnboardingTargets.Plugin() => _toolbar?.GetButtonPhysicalRect("plugin");
+    Rect? IOnboardingTargets.ExitShow() => _toolbar?.GetButtonPhysicalRect("nav.exit");
     Rect? IOnboardingTargets.Grip() => _toolbar?.GetGripPhysicalRect();
-    Rect? IOnboardingTargets.NavBlock() =>
-        _pageIslandR is { IsVisible: true } r ? r.GetIslandPhysicalRect() : _pageIslandL?.GetIslandPhysicalRect();
+
+    /// <summary>左右两个固定翻页岛都高亮 —— 原实现只取一个（右岛优先），新用户会
+    /// 以为只有一侧能翻页。</summary>
+    IReadOnlyList<Rect> IOnboardingTargets.NavBlocks()
+    {
+        var list = new List<Rect>(2);
+        if (_pageIslandR is { IsVisible: true } r && r.GetIslandPhysicalRect() is { } rr) list.Add(rr);
+        if (_pageIslandL is { IsVisible: true } l && l.GetIslandPhysicalRect() is { } ll) list.Add(ll);
+        return list;
+    }
 
 }

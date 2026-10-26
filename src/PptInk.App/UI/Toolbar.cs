@@ -345,6 +345,10 @@ public sealed partial class Toolbar : StageElement
     /// <summary>AI/插件联合区（物理像素）。</summary>
     public Rect? GetAiPluginPhysicalRect() => UnionPhysicalRect("ai", "plugin");
 
+    /// <summary>单个按钮的屏幕物理像素矩形（引导按功能逐一高亮用）。</summary>
+    public Rect? GetButtonPhysicalRect(string id) =>
+        _buttons.TryGetValue(id, out var b) ? StageElement.ScreenRectOfPhysical(b) : null;
+
     private Rect? UnionPhysicalRect(params string[] ids)
     {
         Rect? acc = null;

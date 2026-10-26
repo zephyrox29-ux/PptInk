@@ -49,13 +49,32 @@ public sealed class InkModelTests
     }
 
     [Fact]
-    public void ErasePath_HitsSinglePointStroke()
+    public void HighlighterOutline_HasRoundCapsAndNonzeroFill()
     {
-        // v1.1.2 回归锚点：单点笔迹（轻点墨点）原先永远不进命中循环，涂抹擦除对其
-        // 完全失效 —— 「残留红点擦不掉」。
-        var dot = new StrokeData(Pen);
-        dot.Add(new InkPoint(100, 100, 0.5, 1));
-        Assert.True(dot.HitByErasePath(new[] { new System.Windows.Point(103, 103) }, 10));
-        Assert.False(dot.HitByErasePath(new[] { new System.Windows.Point(500, 500) }, 10));
+        // 荧光笔连贯性回归锚点：
+        //  ① 急转弯处左右边界自交，EvenOdd 会镂空 —— 必须 Nonzero 实心填充；
+        //  ② 两端原本平切，加半圆端帽后应越过起终点。
+        var s = new StrokeData(Pen with { Highlighter = true });
+        s.Add(new InkPoint(0, 0, 0.5, 1));
+        s.Add(new InkPoint(100, 0, 0.5, 2));
+
+        var outline = s.BuildHighlighterOutline(6, 14);
+        Assert.Equal(2 * 2 + 7 * 2, outline.Length);   // 左右各 2 点 + 两端各 7 个半圆采样
+        Assert.Contains(outline, p => p.X < -1);
+        Assert.Contains(outline, p => p.X > 101);
+
+        var geo = s.BuildHighlighterRibbon(6, 14);
+        Assert.Equal(System.Windows.Media.FillRule.Nonzero, geo.FillRule);
+    }
+
+    [Fact]
+    public void ErasePath_HitsLongSegmentBetweenSparsePoints()
+    {
+        // 稀疏采样下的长线段：橡皮穿过两点正中间（两端距橡皮都超过半径）时，
+        // 按「点」判定会整段漏擦。命中检测本身按线段距离判定，这里锁定该语义。
+        var s = new StrokeData(Pen);
+        s.Add(new InkPoint(0, 0, 0.5, 1));
+        s.Add(new InkPoint(200, 0, 0.5, 2));
+        Assert.True(s.HitByErasePath(new[] { new System.Windows.Point(100, 5) }, 10));
     }
 }

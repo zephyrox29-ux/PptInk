@@ -316,6 +316,9 @@ public sealed class StrokeData
             return _cachedRibbon;
 
         var geo = new PathGeometry();
+        // v1.1.2 连贯性修复：急转弯时左右边界会自交，EvenOdd 填充会把自交区镂空成
+        // 「白洞」。Nonzero 保证整条墨带始终实心，转弯处不再断开。
+        geo.FillRule = FillRule.Nonzero;
         var outline = BuildHighlighterOutline(tipWidthPx, tipHeightPx);
         if (outline.Length >= 3)
         {
@@ -348,6 +351,9 @@ public sealed class StrokeData
         // 每点运动方向（中心差分；端点用相邻段；静止点默认水平方向）
         var left = new Point[n];
         var right = new Point[n];
+        var dirX = new double[n];
+        var dirY = new double[n];
+        var halfArr = new double[n];
         for (int i = 0; i < n; i++)
         {
             int a = Math.Max(0, i - 1), b = Math.Min(n - 1, i + 1);
@@ -360,6 +366,7 @@ public sealed class StrokeData
             // 方向相关半宽：横画（dir 水平）→ half=H/2（粗）；竖画（dir 垂直）→ half=W/2（细）
             double half = hw2 * Math.Abs(dy) + hh2 * Math.Abs(dx);
             var p = pts[i];
+            dirX[i] = dx; dirY[i] = dy; halfArr[i] = half;
             left[i] = new Point(p.X - nx * half, p.Y - ny * half);
             right[i] = new Point(p.X + nx * half, p.Y + ny * half);
         }
@@ -368,11 +375,33 @@ public sealed class StrokeData
         var sl = SmoothBoundary(left);
         var sr = SmoothBoundary(right);
 
-        // 闭合多边形：左边界正向 + 右边界反向，两端自然闭合
-        var outline = new Point[2 * n];
-        for (int i = 0; i < n; i++) outline[i] = sl[i];
-        for (int i = 0; i < n; i++) outline[2 * n - 1 - i] = sr[i];
-        return outline;
+        // 闭合轮廓：左边界正向 → 终点半圆端帽 → 右边界反向 → 起点半圆端帽。
+        // v1.1.2：原实现两端是平切斜口，快速划线时端点像被刀切；加半圆端帽后
+        // 起收笔与真实荧光笔一致，也让相邻笔迹的衔接看起来连续。
+        const int capSteps = 8;
+        var outline = new List<Point>(2 * n + capSteps * 2);
+        for (int i = 0; i < n; i++) outline.Add(sl[i]);
+        AppendHighlighterCap(outline, pts[n - 1], dirX[n - 1], dirY[n - 1], halfArr[n - 1], atStart: false, capSteps);
+        for (int i = n - 1; i >= 0; i--) outline.Add(sr[i]);
+        AppendHighlighterCap(outline, pts[0], dirX[0], dirY[0], halfArr[0], atStart: true, capSteps);
+        return outline.ToArray();
+    }
+
+    /// <summary>荧光笔端帽：沿笔尖外侧画半圆，把平切端变成圆头。
+    /// 起点朝已来方向凸（atStart），终点朝前进方向凸；采样点不含两端（两端由左右边界提供）。</summary>
+    private static void AppendHighlighterCap(List<Point> outp, InkPoint center, double dx, double dy, double half,
+                                             bool atStart, int steps)
+    {
+        double nx = -dy, ny = dx;
+        for (int k = 1; k < steps; k++)
+        {
+            double t = (double)k / steps;
+            double th = atStart ? Math.PI * t : Math.PI * (1.0 - t);
+            double c = Math.Cos(th);                     // 起点 +1→-1（右→左）；终点 -1→+1（左→右）
+            double s = Math.Sin(th) * (atStart ? -1.0 : 1.0);   // 外侧凸出方向
+            outp.Add(new Point(center.X + (dx * s + nx * c) * half,
+                               center.Y + (dy * s + ny * c) * half));
+        }
     }
 
     /// <summary>边界三点平滑（1/4, 1/2, 1/4 加权）：ribbon 边缘去锯齿。</summary>
