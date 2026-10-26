@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>PptInk.PluginStudio.Core</AssemblyName>
+    <RootNamespace>PptInk.PluginStudio.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 与主程序同版本：MoonSharp 纯托管 Lua，用于插件的语法解析与 API 清单（不执行用户脚本） -->
+    <PackageReference Include="MoonSharp" Version="2.0.0.0" />
+  </ItemGroup>
+
+</Project>

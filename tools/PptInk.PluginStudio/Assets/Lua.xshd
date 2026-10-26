@@ -1,0 +1,49 @@
+<SyntaxDefinition name="Lua" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+    <Color name="Comment" foreground="#6A9955" />
+    <Color name="String" foreground="#A31515" />
+    <Color name="Keyword" foreground="#0B4F9E" fontWeight="bold" />
+    <Color name="Number" foreground="#098658" />
+    <Color name="Builtin" foreground="#795E26" />
+    <RuleSet>
+        <Span color="Comment" begin="--\[\[" end="\]\]" />
+        <Span color="Comment" begin="--" />
+        <Span color="String" begin="&quot;" end="&quot;" />
+        <Span color="String" begin="'" end="'" />
+        <Keywords color="Keyword">
+            <Word>and</Word>
+            <Word>break</Word>
+            <Word>do</Word>
+            <Word>else</Word>
+            <Word>elseif</Word>
+            <Word>end</Word>
+            <Word>false</Word>
+            <Word>for</Word>
+            <Word>function</Word>
+            <Word>if</Word>
+            <Word>in</Word>
+            <Word>local</Word>
+            <Word>nil</Word>
+            <Word>not</Word>
+            <Word>or</Word>
+            <Word>repeat</Word>
+            <Word>return</Word>
+            <Word>then</Word>
+            <Word>true</Word>
+            <Word>until</Word>
+            <Word>while</Word>
+        </Keywords>
+        <Keywords color="Builtin">
+            <Word>string</Word>
+            <Word>math</Word>
+            <Word>table</Word>
+            <Word>ipairs</Word>
+            <Word>pairs</Word>
+            <Word>tonumber</Word>
+            <Word>tostring</Word>
+            <Word>print</Word>
+        </Keywords>
+        <Rule color="Number">
+            \b0[xX][0-9a-fA-F]+|\b\d+(\.\d+)?
+        </Rule>
+    </RuleSet>
+</SyntaxDefinition>

@@ -1,0 +1,212 @@
+<Window x:Class="PptInk.PluginStudio.Views.WorkbenchWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:svc="clr-namespace:PptInk.PluginStudio.Services"
+        Title="PptInk 插件工作室" Height="820" Width="1220" MinHeight="640" MinWidth="980"
+        WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid x:Name="Root">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- 顶部工具栏 -->
+            <Border Grid.Row="0" Background="{StaticResource PanelBg}" BorderBrush="#E3E7EC" BorderThickness="0,0,0,1" Padding="10">
+                <WrapPanel>
+                    <Button Content="新建（向导）" Style="{StaticResource PrimaryButton}" Click="New_Click"/>
+                    <Button Content="打开工程" Style="{StaticResource GhostButton}" Click="Open_Click"/>
+                    <Button Content="保存工程" Style="{StaticResource GhostButton}" Click="Save_Click"/>
+                    <Button Content="导入插件包" Style="{StaticResource GhostButton}" Click="Import_Click"/>
+                    <Button Content="示例库" Style="{StaticResource GhostButton}" Click="Templates_Click"/>
+                    <Button Content="校验" Style="{StaticResource GhostButton}" Click="Validate_Click"/>
+                    <Button Content="刷新预览" Style="{StaticResource GhostButton}" Click="Preview_Click"/>
+                    <Button Content="打包 zip" Style="{StaticResource PrimaryButton}" Click="Pack_Click"/>
+                    <Button Content="一键安装" Style="{StaticResource PrimaryButton}" Click="Install_Click"/>
+                    <Button Content="生成说明" Style="{StaticResource GhostButton}" Click="Readme_Click"/>
+                    <Button Content="使用说明" Style="{StaticResource GhostButton}" Click="Usage_Click"/>
+                    <Button Content="操作指引" Style="{StaticResource GhostButton}" Click="Help_Click"/>
+                </WrapPanel>
+            </Border>
+
+            <!-- 主体 -->
+            <Grid Grid.Row="1" Margin="10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="400" MinWidth="320"/>
+                    <ColumnDefinition Width="5"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- 左栏：配置 -->
+                <TabControl x:Name="LeftTabs" Grid.Column="0">
+                    <TabItem Header="基本信息">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="14">
+                            <StackPanel>
+                                <TextBlock Text="插件类型（决定与宿主的交互方式）" FontWeight="SemiBold"/>
+                                <ComboBox x:Name="KindCombo" Height="30" Margin="0,4,0,12" SelectionChanged="Kind_Changed">
+                                    <ComboBoxItem Content="面板类（Panel）"/>
+                                    <ComboBoxItem Content="绘制类（Draw）"/>
+                                    <ComboBoxItem Content="自由类（Free）"/>
+                                </ComboBox>
+
+                                <TextBlock Text="插件 Id（全局唯一：字母/数字/点/下划线/连字符）"/>
+                                <TextBox x:Name="IdBox" Height="30" Margin="0,4,0,12"/>
+
+                                <TextBlock Text="名称"/>
+                                <TextBox x:Name="NameBox" Height="30" Margin="0,4,0,12"/>
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="版本"/>
+                                        <TextBox x:Name="VersionBox" Height="30" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="作者"/>
+                                        <TextBox x:Name="AuthorBox" Height="30" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <TextBlock Text="入口脚本文件名" Margin="0,12,0,0"/>
+                                <TextBox x:Name="EntryBox" Height="30" Margin="0,4,0,12" Text="main.lua"/>
+
+                                <TextBlock Text="描述"/>
+                                <TextBox x:Name="DescBox" Height="70" Margin="0,4,0,0" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+
+                    <TabItem x:Name="PanelTab" Header="面板设计">
+                        <DockPanel Margin="10">
+                            <StackPanel DockPanel.Dock="Top">
+                                <TextBlock Text="面板外观（Dock / 尺寸 / 透明度）" FontWeight="SemiBold"/>
+                                <Grid Margin="0,6,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="停靠"/>
+                                        <ComboBox x:Name="DockCombo" Height="28" Margin="0,3,0,0">
+                                            <ComboBoxItem Content="float"/>
+                                            <ComboBoxItem Content="left"/>
+                                            <ComboBoxItem Content="right"/>
+                                            <ComboBoxItem Content="bottom"/>
+                                        </ComboBox>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="宽（160–600）"/>
+                                        <TextBox x:Name="WidthBox" Height="28" Margin="0,3,0,0" Text="240"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="4">
+                                        <TextBlock Text="高（100–500）"/>
+                                        <TextBox x:Name="HeightBox" Height="28" Margin="0,3,0,0" Text="160"/>
+                                    </StackPanel>
+                                </Grid>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="透明度（0.3–1.0）"/>
+                                        <TextBox x:Name="AlphaBox" Height="28" Margin="0,3,0,0" Text="0.88"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" VerticalAlignment="Bottom">
+                                        <CheckBox x:Name="ShowIslandCheck" Content="挂到浮岛区" IsChecked="True" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <Button Content="添加元素" Style="{StaticResource GhostButton}" Click="AddElement_Click"/>
+                                    <Button Content="删除选中" Style="{StaticResource GhostButton}" Click="RemoveElement_Click"/>
+                                </StackPanel>
+                                <TextBlock Text="元素回调名（OnEvent）需与脚本文中函数同名；滑条需 min&lt;max。" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                            </StackPanel>
+                            <DataGrid x:Name="PanelGrid" AutoGenerateColumns="False" CanUserAddRows="False" HeadersVisibility="Column">
+                                <DataGrid.Columns>
+                                    <DataGridComboBoxColumn x:Name="TypeColumn" Header="类型" Width="90"
+                                                            SelectedItemBinding="{Binding Type, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <DataGridTextColumn Header="Id" Binding="{Binding Id}" Width="90"/>
+                                    <DataGridTextColumn Header="文本" Binding="{Binding Text}" Width="120"/>
+                                    <DataGridTextColumn Header="Min" Binding="{Binding Min}" Width="60"/>
+                                    <DataGridTextColumn Header="Max" Binding="{Binding Max}" Width="60"/>
+                                    <DataGridTextColumn Header="值" Binding="{Binding Value}" Width="60"/>
+                                    <DataGridTextColumn Header="OnEvent" Binding="{Binding OnEvent}" Width="*"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </TabItem>
+
+                    <TabItem Header="权限">
+                        <StackPanel Margin="14">
+                            <TextBlock Text="权限声明（首次启用时向用户确认）" FontWeight="SemiBold"/>
+                            <CheckBox x:Name="PermFile" Content="file —— 允许把截图等写入插件专属目录" Margin="0,10,0,0"/>
+                            <CheckBox x:Name="PermClip" Content="clipboard —— 允许读写剪贴板" Margin="0,8,0,0"/>
+                            <TextBlock Text="network —— 当前版本未注入网络能力，声明不生效。" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+                        </StackPanel>
+                    </TabItem>
+                </TabControl>
+
+                <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#E3E7EC"/>
+
+                <!-- 右栏：编辑器 + 校验/预览 -->
+                <Grid Grid.Column="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="5"/>
+                        <RowDefinition Height="260" MinHeight="140"/>
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Background="{StaticResource PanelBg}" CornerRadius="10" Padding="8">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Text="脚本（Lua，Ctrl+空格可触发补全）" FontWeight="SemiBold" Margin="2,0,0,6"/>
+                            <svc:AvalonLuaEditorHost x:Name="EditorHost"/>
+                        </DockPanel>
+                    </Border>
+
+                    <GridSplitter Grid.Row="1" HorizontalAlignment="Stretch" Background="#E3E7EC"/>
+
+                    <TabControl Grid.Row="2" Margin="0,6,0,0">
+                        <TabItem Header="校验结果">
+                            <ListView x:Name="ValidationList" MouseDoubleClick="ValidationList_MouseDoubleClick">
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="级别" Width="60" DisplayMemberBinding="{Binding Level}"/>
+                                        <GridViewColumn Header="位置" Width="220" DisplayMemberBinding="{Binding Field}"/>
+                                        <GridViewColumn Header="说明" Width="700" DisplayMemberBinding="{Binding Message}"/>
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                        </TabItem>
+                        <TabItem Header="预览">
+                            <ScrollViewer Padding="10">
+                                <ContentControl x:Name="PreviewHost"/>
+                            </ScrollViewer>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
+            </Grid>
+
+            <Border Grid.Row="2" Background="{StaticResource PanelBg}" BorderBrush="#E3E7EC" BorderThickness="0,1,0,0" Padding="10,6">
+                <TextBlock x:Name="StatusText" Foreground="{StaticResource TextSecondary}" Text="就绪"/>
+            </Border>
+        </Grid>
+
+        <!-- 操作指引覆盖层 -->
+        <Grid x:Name="HelpOverlay" Grid.RowSpan="3" Background="#CC1F2937" Visibility="Collapsed">
+            <Border Background="White" CornerRadius="14" Padding="24" Width="620" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel>
+                    <TextBlock Text="快速上手 · 六步做出一个插件" FontSize="20" FontWeight="SemiBold"/>
+                    <TextBlock Margin="0,12,0,0" TextWrapping="Wrap" LineHeight="22"
+                               Text="1. 点「新建（向导）」选类型与模板，生成骨架。&#10;2. 在左栏「基本信息」填 Id、名称、描述。&#10;3. 面板类插件在「面板设计」增删元素，并让 OnEvent 与脚本函数同名。&#10;4. 在右侧编辑器写 Lua 逻辑（输入字母会自动提示注入 API）。&#10;5. 点「校验」——错误会列在下方，双击可定位。&#10;6. 校验通过后「打包 zip」或「一键安装」到 PptInk 插件目录。&#10;&#10;提示：示例库内置计时器/画板/点名三个可直接运行的例子。"/>
+                    <TextBlock Margin="0,14,0,0" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap"
+                               Text="注入 API：setPen / drawPolyline / drawText / eraseBehavior / startTimer / stopTimers / showToast / closePanel / updatePanelElement（clipboard 权限追加 readClipboard / writeClipboard；file 权限追加 captureScreen）。"/>
+                    <Button Content="知道了，开始创作" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Right" Margin="0,18,0,0" Click="HelpClose_Click"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>
