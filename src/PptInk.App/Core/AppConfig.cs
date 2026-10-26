@@ -227,6 +227,13 @@ public sealed class AppConfig
     /// <summary>工具栏整体缩放（0.7~1.6）：大屏远距操作时调大更易按。</summary>
     public double ToolbarScale { get; set; } = 1.0;
 
+    /// <summary>工具栏图标主题（v1.1.2）：classic=原矢量；rounded/outlined/sharp=Material Symbols（更精致直观）。
+    /// 默认 rounded。</summary>
+    public string ToolbarIconTheme { get; set; } = "rounded";
+
+    /// <summary>工具栏图标下显示中文短标签（v1.1.2，默认开）：更直观；关闭则更紧凑。</summary>
+    public bool ToolbarShowLabels { get; set; } = true;
+
     /// <summary>是否在无交互一段时间后将工具栏淡化。触摸优先默认关闭，避免控件看似消失。</summary>
     public bool ToolbarIdleFadeEnabled { get; set; } = false;
 
@@ -389,6 +396,7 @@ public sealed class AppConfig
             ? Math.Clamp(cfg.EraserRadiusMm, 2.0, 120.0) : 18.0;
         cfg.ShapeRecognizeDelayMs = Math.Clamp(cfg.ShapeRecognizeDelayMs, 150, 5000);
         cfg.ToolbarScale = double.IsFinite(cfg.ToolbarScale) ? Math.Clamp(cfg.ToolbarScale, 0.7, 1.6) : 1.0;
+        cfg.ToolbarIconTheme = cfg.ToolbarIconTheme is "classic" or "rounded" or "outlined" or "sharp" ? cfg.ToolbarIconTheme : "rounded";
         cfg.ToolbarIdleFadeSeconds = double.IsFinite(cfg.ToolbarIdleFadeSeconds)
             ? Math.Clamp(cfg.ToolbarIdleFadeSeconds, 0.5, 15.0) : 2.5;
         cfg.ToolbarIdleOpacity = double.IsFinite(cfg.ToolbarIdleOpacity)

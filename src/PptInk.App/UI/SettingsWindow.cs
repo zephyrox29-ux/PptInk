@@ -581,7 +581,20 @@ public sealed class SettingsWindow : Window
     {
         var sp = PageStack();
         sp.Children.Add(PageTitle("工具栏"));
-        sp.Children.Add(PageSubtitle("调图标顺序和显隐。笔始终可见。"));
+        sp.Children.Add(PageSubtitle("图标主题、图标下文字、顺序与显隐。笔始终可见。"));
+
+        // v1.1.2 图标外观：多套优质图标（Material Symbols）+ 图标下文字（切换即时生效）
+        var appCfg = _svc.Config;
+        var lookList = new StackPanel();
+        lookList.Children.Add(SettingsRow("图标主题", "经典=原矢量；圆角/线性/锐利=Material Symbols，更精致直观。",
+            Segmented(new[] { ("经典", "classic"), ("圆角", "rounded"), ("线性", "outlined"), ("锐利", "sharp") },
+                appCfg.ToolbarIconTheme,
+                v => { appCfg.ToolbarIconTheme = v; appCfg.Save(); _svc.UiOrchestrator.RefreshToolbarLayout(); })));
+        lookList.Children.Add(SwitchRow("图标下显示文字",
+            "每个工具图标下方显示中文短名，更直观；关掉更紧凑。切换即时生效。",
+            appCfg.ToolbarShowLabels,
+            v => { appCfg.ToolbarShowLabels = v; appCfg.Save(); _svc.UiOrchestrator.RefreshToolbarLayout(); }));
+        sp.Children.Add(Card("图标外观", lookList));
 
         var list = new StackPanel();
         var layout = _svc.Config.ToolbarLayout;
