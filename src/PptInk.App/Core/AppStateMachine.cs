@@ -59,6 +59,13 @@ public sealed class AppStateMachine
             {
                 slide = ApplySlideIndex(ev.SlideIndex);
             }
+            else if (Phase == AppPhase.S2Yield && _session is { } yieldSession)
+            {
+                // 希沃白板仍在前台时，COM 重连/WPS 二次 Begin 可能补报 Started；
+                // 不能因此把置顶墨迹层弹回 S1，否则会截胡白板上的书写。
+                yieldSession.UpdatePosition(ev.SlideIndex, ev.TotalSlides);
+                return;
+            }
             else
             {
                 _session = new ShowSession(ev.Source, ev.TotalSlides, ev.SlideIndex);

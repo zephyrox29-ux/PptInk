@@ -477,6 +477,51 @@ public sealed partial class UnifiedStageWindow
         }
     }
 
+    // ———————— WPF 接触面积 → 通道 B/C 手掌守卫 ————————
+
+    private void OnTouchContactDown(object? sender, TouchEventArgs e) => ObserveTouchContact(e, down: true);
+
+    private void OnTouchContactMove(object? sender, TouchEventArgs e) => ObserveTouchContact(e, down: false);
+
+    private void OnTouchContactUp(object? sender, TouchEventArgs e) => _touchPalmById.TryRemove(e.TouchDevice.Id, out _);
+
+    private void ObserveTouchContact(TouchEventArgs e, bool down)
+    {
+        try
+        {
+            if (!_svc.PalmRejection.Enabled) return;
+            var tp = e.GetTouchPoint(_inkLayer);
+            var size = tp.Size;
+            if (size.Width <= 0 || size.Height <= 0 || !double.IsFinite(size.Width) || !double.IsFinite(size.Height)) return;
+            double k = DevicePerDip;
+            var screen = _inkLayer.PointToScreen(tp.Position);
+            var rect = new Rect(screen.X - size.Width * k / 2, screen.Y - size.Height * k / 2,
+                size.Width * k, size.Height * k);
+            bool accepted = _svc.PalmRejection.ShouldAcceptInk(rect);
+            _touchPalmById[e.TouchDevice.Id] = !accepted;
+            if (!accepted)
+            {
+                // StylusPlugIn 的 Down 可能早于 WPF 触摸事件：给紧随其后的 B Down 一个
+                // 很短的抑制窗口。真实手指重触不会被长期锁死。
+                Interlocked.Exchange(ref _palmBlockUntilTick, Environment.TickCount64 + 120);
+                _touchOwnedUntil = Environment.TickCount64 + 800;
+                InputDiagnostics.Note($"手掌面积拒绝：WPF Touch {size.Width:F1}×{size.Height:F1} DIP");
+            }
+            else if (down)
+            {
+                Interlocked.Exchange(ref _palmBlockUntilTick, 0);
+            }
+        }
+        catch { /* 接触元数据异常绝不阻断输入 */ }
+    }
+
+    private bool IsPalmSuppressedDevice(int stylusDeviceId)
+    {
+        if (!_svc.PalmRejection.Enabled) return false;
+        if (_touchPalmById.TryGetValue(stylusDeviceId, out bool rejected) && rejected) return true;
+        return Environment.TickCount64 <= Interlocked.Read(ref _palmBlockUntilTick);
+    }
+
     // ———————— 通道 C：鼠标兜底（笔记本 / 无触摸设备 / 触摸→鼠标提升链） ————————
     // v0.6.0 触摸合成鼠标兜底（用户实测「从未捕捉到触摸和鼠标」的正面攻坚）：
     // 板中板（非透明普通窗口 + InkCanvas）流畅可画、工具栏按钮可点（触摸→鼠标提升链活）

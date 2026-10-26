@@ -26,6 +26,9 @@ public sealed partial class Toolbar
     private bool _paletteClosing;
     private bool _paletteUpdatingRgb;
     private int _paletteTransition;
+    /// <summary>浮岛调色落盘合并：拖 RGB 滑块时每帧写盘会造成明显卡顿，
+    /// 停手 400ms 后落一次（与擦除浮岛/设置页同一节奏）。</summary>
+    private readonly DispatcherTimer _paletteSaveDebounce = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private InkTool _paletteTool = InkTool.Pen;   // v0.9.7：浮岛按工具区分颜色集（笔/荧光笔）
 
     // v0.9.7：与设置中心「画笔」页的色板同源 —— 浮岛默认色即用户在设置里配的画笔/荧光笔颜色。
@@ -225,6 +228,7 @@ public sealed partial class Toolbar
     /// <summary>正常收回播放对称吮吸动画；立即收回用于拖动、隐藏舞台等输入所有权切换。</summary>
     public void HidePalette(bool immediate = false)
     {
+        FlushPaletteConfigSave();   // 关面板即落盘：不会因为防抖窗口丢掉最后一次调色
         if (_palettePanel.Visibility != Visibility.Visible) return;
         if (_paletteClosing && !immediate) return;
         AnimationKit.GlideCancel(this);
@@ -543,6 +547,21 @@ public sealed partial class Toolbar
         RefreshPaletteRecent();
     }
 
+    /// <summary>滑杆拖动期间的落盘合并（停手 400ms 落一次）。</summary>
+    private void QueuePaletteConfigSave()
+    {
+        _paletteSaveDebounce.Stop();
+        _paletteSaveDebounce.Start();
+    }
+
+    /// <summary>立即落盘并停表（关闭浮岛/窗口失焦时调用，保证最后一次调色不丢）。</summary>
+    private void FlushPaletteConfigSave()
+    {
+        if (!_paletteSaveDebounce.IsEnabled) return;
+        _paletteSaveDebounce.Stop();
+        _svc.Config.Save();
+    }
+
     private void ApplyPalettePen()
     {
         // v0.9.7：按浮岛所属工具分别落色 ——
@@ -557,7 +576,7 @@ public sealed partial class Toolbar
             // 荧光笔粗细由 InkEngine.Pen.ThicknessMm 派生（OnStylusDown 中 Math.Max(Pen.ThicknessMm, 8)），
             // 浮岛粗细滑块同样写到这里 —— 普通笔/荧光笔共享同一粗细基准。
             _svc.InkEngine.Pen = _svc.InkEngine.Pen with { ThicknessMm = _paletteMm };
-            _svc.Config.Save();
+            QueuePaletteConfigSave();
         }
         else
         {

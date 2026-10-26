@@ -172,7 +172,18 @@ public static class ThemeManager
             : Color.FromArgb(0xC2, 0x0A, 0x10, 0x0F));
 
         // —— 阴影（Minimal 去阴影，其余保留柔和投影） ——
+        // Token 里的 ShadowChrome 是静态资源；代码构建的工具栏/翻页岛/页码浮层
+        // 通过 SetResourceReference 引用它。只在 PanelHasShadow 写 false 没有任何
+        // 消费者，必须直接把动态资源换成 null，Minimal 才能真的“无阴影”。
         res["PanelHasShadow"] = _material != PanelMaterial.Minimal;
+        res["ShadowChrome"] = _material == PanelMaterial.Minimal
+            ? null
+            : new System.Windows.Media.Effects.DropShadowEffect
+            { BlurRadius = 22, ShadowDepth = 5, Direction = 270, Opacity = 0.28 };
+        res["ShadowChromeStrong"] = _material == PanelMaterial.Minimal
+            ? null
+            : new System.Windows.Media.Effects.DropShadowEffect
+            { BlurRadius = 30, ShadowDepth = 9, Direction = 270, Opacity = 0.36 };
 
         RefreshAcrylicAllWindows();
         ThemeChanged?.Invoke();

@@ -35,11 +35,11 @@ internal static class PluginUiKit
         var b = new Button
         {
             Content = text,
-            FontSize = 14,
+FontSize = 14,
             Cursor = Cursors.Hand,
             Focusable = false,
-            Margin = new Thickness(3, 2, 3, 2),
             MinWidth = 44,
+            MinHeight = 44,
         };
         // 文字跟随主题：深色主题暖白 / 浅色主题墨绿黑
         b.SetResourceReference(Control.ForegroundProperty, "TextPrimaryBrush");
@@ -90,9 +90,9 @@ internal sealed class TimerElement : StageElement
 {
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(1) };
     private int _seconds;
+    private int _presetSeconds = 300;
     private int _mode; // 0=正 1=倒
     private readonly TextBlock _display = new() { FontSize = 44, HorizontalAlignment = HorizontalAlignment.Center };
-    private readonly TextBox _input = new() { Text = "300", FontSize = 16, Width = 80, HorizontalAlignment = HorizontalAlignment.Center };
     private readonly DragKit _drag;
 
     public TimerElement()
@@ -105,13 +105,30 @@ internal sealed class TimerElement : StageElement
         BindTheme(() => border.Background = ThemeManager.ContentBackground);
         _display.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimaryBrush");
         panel.Children.Add(_display);
-        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 0) };
+
+        // 不用 TextBox：舞台是 NOACTIVATE，物理键盘不会进入；触摸屏也不保证弹系统键盘。
+        // 改成 1/3/5/10 分钟大按钮，课堂远距/戴手套都能操作。
+        var presets = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 2) };
+        foreach (var (label, seconds) in new[] { ("1分", 60), ("3分", 180), ("5分", 300), ("10分", 600) })
+        {
+            int value = seconds;
+            var b = PluginUiKit.Button(label, () =>
+            {
+                _presetSeconds = value;
+                _seconds = value;
+                _display.Text = $"{_seconds / 60:D2}:{_seconds % 60:D2}";
+            });
+            b.MinWidth = 52;
+            presets.Children.Add(b);
+        }
+        panel.Children.Add(presets);
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 4, 0, 0) };
         void Btn(string t, Action click) => row.Children.Add(PluginUiKit.Button(t, click));
         Btn("正", () => { _mode = 0; _seconds = 0; _timer.Start(); });
-        Btn("倒", () => { if (int.TryParse(_input.Text, out var s)) _seconds = s; _mode = 1; _timer.Start(); });
+        Btn("倒", () => { _mode = 1; _seconds = _presetSeconds; _display.Text = $"{_seconds / 60:D2}:{_seconds % 60:D2}"; _timer.Start(); });
         Btn("停", () => _timer.Stop());
         Btn("×", () => { _timer.Stop(); HidePanel(); });
-        panel.Children.Add(_input);
         panel.Children.Add(row);
 
         // 放映屏感知：锚放映屏顶部居中（旧版「不设位置默认放主屏」的问题由屏幕坐标纪律解决）
@@ -119,8 +136,7 @@ internal sealed class TimerElement : StageElement
         ScreenLeft = show.Left + (show.Width - 220) / 2;
         ScreenTop = show.Top + 48;
 
-        // 拖动（原 DragMove）：整面板冒泡模式 —— 内含按钮/文本框，不得隧道拦截
-        //（否则按钮 Click 与文本框聚焦全失效）；空白区按下才拖动，与旧版逐点等价
+        // 拖动（原 DragMove）：整面板冒泡模式 —— 内含按钮，不得隧道拦截
         _drag = new DragKit(this);
         _drag.WireBubble(this);
 
@@ -135,7 +151,7 @@ internal sealed class TimerElement : StageElement
             else if (_mode == 0) _seconds++;
             _display.Text = $"{_seconds / 60:D2}:{_seconds % 60:D2}";
         };
-        _display.Text = "00:00";
+        _display.Text = "05:00";
     }
 
     public void ShowPanel()
@@ -147,10 +163,14 @@ internal sealed class TimerElement : StageElement
         if (!ShowInExclusivePanelSlot(220, h))
             Toast.Show("面板放不下。关掉调试面板，或把显示缩放调小。");
     }
-    public void HidePanel() => HideBorrowedAware();
+    public void HidePanel()
+    {
+        // 被另一个插件面板抢占共享槽位时也会走这里：停表，避免隐藏后后台继续计时。
+        _timer.Stop();
+        HideBorrowedAware();
+    }
 
-    /// <summary>宿主停用钩子：HidePanel 只折叠元素不停表，停用不停表会让 1s tick
-    /// 在面板隐藏后永久空转（正计时模式永不自停，倒计时归零还会弹「时间到」）。</summary>
+    /// <summary>宿主停用钩子（兼容旧调用）。</summary>
     public void StopForHost() => _timer.Stop();
 }
 
@@ -390,10 +410,13 @@ internal sealed class PickElement : StageElement
         if (!ShowInExclusivePanelSlot(w, h))
             Toast.Show("面板放不下。关掉调试面板，或把显示缩放调小。");
     }
-    public void HidePanel() => HideBorrowedAware();
+    public void HidePanel()
+    {
+        _roll.Stop();   // 抢占共享槽位/隐藏时停止 70ms 滚动
+        HideBorrowedAware();
+    }
 
-    /// <summary>宿主停用钩子：HidePanel 只折叠元素不停表，停用不停表会让 70ms 滚动
-    /// tick 在面板隐藏后永久空转（与面板内「停！」/「×」按钮语义对齐）。</summary>
+    /// <summary>宿主停用钩子（兼容旧调用）。</summary>
     public void StopForHost() => _roll.Stop();
 
     private UIElement MakeButtons()

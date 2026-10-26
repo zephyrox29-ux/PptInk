@@ -129,6 +129,17 @@ public sealed class InkEngine
     public DeviceProfile Profile { get; private set; }
 
     public InkPage CurrentPage => _doc.GetPage(CurrentSlideIndex);
+    /// <summary>当前会话是否有可导出的笔迹（换课件提示/导出判断）。</summary>
+    public bool HasInk
+    {
+        get
+        {
+            lock (_gate)
+                return _doc.Pages.Values.Any(p => p.Strokes.Count > 0);
+        }
+    }
+    /// <summary>当前演示文稿身份（null = 尚未取得，兜底通道/WPS）。</summary>
+    public string? SessionIdentity { get { lock (_gate) return _doc.SessionIdentity; } }
     public StrokeData? LiveStroke => _live;
     public int LiveRenderedUpto => _lastRenderedLiveIndex;
     public IReadOnlyList<Point> LiveErasePath => _erasePath;
@@ -382,7 +393,10 @@ public sealed class InkEngine
     /// 在 Feed 前把两侧一起隔点抽稀，等长前缀关系得以永久保持。</summary>
     private void CompactLiveStroke()
     {
-        if (_live is null || _live.Points.Count < StrokeData.MaxPoints) return;
+        // 提前 256 点折半：Up 的补点循环可能一次追加平滑点 + 3 个断触插值点，
+        // 若等到恰好 MaxPoints 才折半，循环内 StrokeData.Add 会再次折半而 smoothed
+        // 计数不变，形成永不终止的补点循环。留下安全余量后，循环内不会再触发 Add 折半。
+        if (_live is null || _live.Points.Count < StrokeData.MaxPoints - 256) return;
         _live.CompactPoints();
         _filter.CompactSmoothed();
     }
@@ -473,6 +487,25 @@ public sealed class InkEngine
     /// v1.1.0 修复：原先调用方在 UI 线程无锁枚举 CurrentPage.Strokes —— 停笔排程的识别
     /// 触发时老师可能已开始写下一笔，与墨迹线程抬笔提交（List.Add）并发会抛「集合已修改」，
     /// AI 识别随机失灵且无日志。（与上方 LastDrawableStroke 同一教训的另一半。）</summary>
+    /// <summary>持锁快照当前页全部笔迹：Beta 文字防误触/多笔矫正的后台分析入口。</summary>
+    public StrokeData[] SnapshotCurrentPageStrokes()
+    {
+        lock (_gate) return CurrentPage.Strokes.ToArray();
+    }
+
+    /// <summary>从当前页移除一笔并入撤销栈（Beta 补笔合并/高级矫正用）。</summary>
+    public bool RemoveStroke(StrokeData stroke)
+    {
+        lock (_gate)
+        {
+            var page = CurrentPage;
+            if (!page.Strokes.Contains(stroke)) return false;
+            page.History.Commit(new EraseStrokesOp(new[] { stroke }));
+        }
+        VisualInvalidated?.Invoke(this, new InkVisualInvalidated { Reason = InvalidateReason.HistoryChanged });
+        return true;
+    }
+
     public List<StrokeData> SnapshotRecentStrokes(int count)
     {
         lock (_gate)

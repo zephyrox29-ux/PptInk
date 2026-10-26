@@ -19,6 +19,8 @@ public partial class WorkbenchWindow : Window
 {
     private readonly ObservableCollection<PanelRow> _rows = new();
     private ProjectModel? _project;
+    private bool _dirty;
+    private bool _loading;
 
     public WorkbenchWindow()
     {
@@ -28,6 +30,18 @@ public partial class WorkbenchWindow : Window
         KindCombo.SelectedIndex = 0;
         DockCombo.SelectedIndex = 0;
 
+        // 编辑脏标记：Lua、基本信息、面板元素任一变化都提示，避免新建/打开/导入
+        // 或关窗时静默丢弃未保存内容。
+        foreach (var box in new[] { IdBox, NameBox, VersionBox, AuthorBox, DescBox, EntryBox })
+            box.TextChanged += (_, _) => { if (!_loading) _dirty = true; };
+        EditorHost.TextChanged += (_, _) => { if (!_loading) _dirty = true; };
+        PanelGrid.CellEditEnding += (_, _) => { if (!_loading) _dirty = true; };
+        PanelGrid.CurrentCellChanged += (_, _) => { if (!_loading) _dirty = true; };
+        Closing += (_, e) =>
+        {
+            if (!ConfirmDiscard()) e.Cancel = true;
+        };
+
         LoadProject(TemplateLibrary.Blank(PluginKind.Panel));
         Status("就绪。可用「新建（向导）」开始，或从「示例库」克隆一个示例。");
     }
@@ -36,6 +50,7 @@ public partial class WorkbenchWindow : Window
 
     private void New_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfirmDiscard()) return;
         var wizard = new WizardWindow { Owner = this };
         if (wizard.ShowDialog() == true && wizard.Result is { } project)
         {
@@ -44,10 +59,20 @@ public partial class WorkbenchWindow : Window
         }
     }
 
-    private void Templates_Click(object sender, RoutedEventArgs e) => New_Click(sender, e);
+    private void Templates_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ConfirmDiscard()) return;
+        var picker = new TemplatePickerWindow { Owner = this };
+        if (picker.ShowDialog() == true && picker.Result is { } project)
+        {
+            LoadProject(project);
+            Status($"已从示例库创建：{project.Manifest.Name}");
+        }
+    }
 
     private void Open_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfirmDiscard()) return;
         var path = Services.FileDialogs.OpenProject(this);
         if (path is null) return;
         try
@@ -69,6 +94,7 @@ public partial class WorkbenchWindow : Window
         try
         {
             ProjectFile.Save(BuildProject(), dir);
+            _dirty = false;
             Status("工程已保存到：" + dir);
         }
         catch (Exception ex)
@@ -79,6 +105,7 @@ public partial class WorkbenchWindow : Window
 
     private void Import_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConfirmDiscard()) return;
         var path = Services.FileDialogs.ImportZip(this);
         if (path is null) return;
         try
@@ -89,6 +116,22 @@ public partial class WorkbenchWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show("导入失败：" + ex.Message, "插件工作室", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ImportDirectory_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ConfirmDiscard()) return;
+        var dir = Services.FileDialogs.ImportDirectory(this);
+        if (dir is null) return;
+        try
+        {
+            LoadProject(PackageImporter.ImportDirectory(dir));
+            Status("已导入插件目录（可反向编辑）。");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("导入目录失败：" + ex.Message, "插件工作室", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -216,6 +259,7 @@ public partial class WorkbenchWindow : Window
 
     private void LoadProject(ProjectModel project)
     {
+        _loading = true;
         _project = project;
         var m = project.Manifest;
 
@@ -238,7 +282,7 @@ public partial class WorkbenchWindow : Window
         ShowIslandCheck.IsChecked = m.Panel?.ShowInIsland ?? true;
 
         _rows.Clear();
-        foreach (var el in m.Panel?.Elements ?? Array.Empty<PanelElement>())
+        foreach (var el in (m.Panel?.Elements ?? Array.Empty<PanelElement>()).OfType<PanelElement>())
             _rows.Add(PanelRow.From(el));
 
         EditorHost.Text = project.LuaSource;
@@ -247,6 +291,19 @@ public partial class WorkbenchWindow : Window
         UpdatePanelTab();
         RefreshEditorCallbacks();
         RefreshPreview();
+        _loading = false;
+        _dirty = false;
+    }
+
+    /// <summary>未保存更改的防丢失确认（新建/打开/导入/关窗共用）。</summary>
+    private bool ConfirmDiscard()
+    {
+        if (!_dirty) return true;
+        var answer = MessageBox.Show(
+            "当前工程还有未保存的修改。继续操作会丢失这些修改，是否继续？",
+            "未保存的修改", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        if (answer == MessageBoxResult.Yes) _dirty = false;
+        return answer == MessageBoxResult.Yes;
     }
 
     private void UpdatePanelTab()
@@ -299,6 +356,9 @@ public partial class WorkbenchWindow : Window
             Panel = SelectedKind == PluginKind.Panel ? BuildPanelDecl() : null,
         },
         LuaSource = EditorHost.Text,
+        // 导入/打开工程时保留资源；旧实现每次 BuildProject 都新建空列表，
+        // 保存/打包/安装会静默丢掉所有图标/图片等非入口文件。
+        Resources = _project?.Resources?.ToList() ?? new List<ResourceFile>(),
         ProjectPath = _project?.ProjectPath,
     };
 
@@ -320,6 +380,7 @@ public partial class WorkbenchWindow : Window
             project.Resources.Any(r => r.RelativePath == e)));
         issues.AddRange(LuaSyntaxChecker.Check(project.LuaSource));
         issues.AddRange(CrossConsistencyChecker.Check(project));
+        issues.AddRange(ManifestValidator.ValidateContent(project.LuaSource, project.Resources));
 
         ValidationList.ItemsSource = issues.Select(i => new IssueRow
         {

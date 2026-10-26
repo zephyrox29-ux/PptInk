@@ -149,10 +149,15 @@ public sealed class EraseModeIsland : StageElement
             Minimum = 6, Maximum = 60, TickFrequency = 1, SmallChange = 1, LargeChange = 4,
             IsMoveToPointEnabled = true, IsSnapToTickEnabled = false,
             Value = Math.Clamp(_svc.Config.EraserRadiusMm, 6, 60),
-            Height = 38, Margin = new Thickness(0, 2, 0, 0),
+            Margin = new Thickness(0, 2, 0, 0),
             ToolTip = "拖动调整橡皮大小",
             Focusable = false, IsTabStop = false,
         };
+        // 与设置页同款触摸样式 + 直驱；否则外层 ScrollViewer 的纵向 panning 会先
+        // 接管拖动，红外框上表现为“拖不动/拖一半变滚动”。
+        if (Application.Current.TryFindResource("TouchSliderStyle") is Style touchStyle)
+            _sizeSlider.Style = touchStyle;
+        TouchSliderKit.Attach(_sizeSlider);
         _sizeSlider.ValueChanged += (_, _) =>
         {
             double radius = Math.Round(_sizeSlider.Value);

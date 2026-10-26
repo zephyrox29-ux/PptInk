@@ -396,6 +396,13 @@ public class StageElement : ContentControl
     /// </summary>
     public virtual void ShowAnimated()
     {
+        if (PptInk.Core.AppConfig.Current.ReduceMotion)
+        {
+            BeginAnimation(OpacityProperty, null);
+            Opacity = 1;
+            Visibility = Visibility.Visible;
+            return;
+        }
         if (Visibility != Visibility.Visible)
         {
             Opacity = 0;

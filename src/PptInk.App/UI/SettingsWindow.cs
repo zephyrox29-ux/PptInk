@@ -144,7 +144,7 @@ public sealed class SettingsWindow : Window
     private static string AppVersion { get; } =
         System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version is { } v
             ? $"v{v.Major}.{v.Minor}.{v.Build}"
-            : "v0.4.0";
+            : "v1.1.2";
 
     // ———————— 骨架：标题栏 + 左导航 + 内容区 ————————
 
@@ -416,7 +416,7 @@ public sealed class SettingsWindow : Window
         sp.Children.Add(PageSubtitle("改完全平台立即生效。"));
 
         // —— 主题 ——
-        var themeRow = new StackPanel { Orientation = Orientation.Horizontal };
+        var themeRow = new WrapPanel();
         themeRow.Children.Add(ThemeCard("深色", AppTheme.Dark, "暗环境舒适，默认"));
         themeRow.Children.Add(ThemeCard("浅色", AppTheme.Light, "明亮教室"));
         themeRow.Children.Add(ThemeCard("跟随系统", AppTheme.Auto, "随 Windows 明暗"));
@@ -555,7 +555,7 @@ public sealed class SettingsWindow : Window
         row.Children.Add(new ContentControl { Content = Glyph(), VerticalAlignment = VerticalAlignment.Center });
         row.Children.Add(textCol);
 
-        var card = new Border { Child = row, Padding = new Thickness(12, 10, 16, 10), CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(2), Margin = new Thickness(0, 0, 10, 10), Width = 246, Cursor = Cursors.Hand };
+        var card = new Border { Child = row, Padding = new Thickness(12, 10, 16, 10), CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(2), Margin = new Thickness(0, 0, 10, 10), MinWidth = 246, MaxWidth = 360, Cursor = Cursors.Hand };
         if (ThemeManager.Material == m)
         {
             card.SetResourceReference(Border.BorderBrushProperty, "AccentBrush");
@@ -638,7 +638,7 @@ public sealed class SettingsWindow : Window
                 p.SetResourceReference(Path.FillProperty, "TextSecondaryBrush");
                 var b = new Button
                 {
-                    Content = p, Width = 44, Height = 44,
+                    Content = p, Width = 46, Height = 46,
                     Cursor = Cursors.Hand, Focusable = false,
                     Background = Brushes.Transparent, BorderThickness = new Thickness(0),
                     Template = PlainButtonTemplate(8), ToolTip = tip,
@@ -1052,7 +1052,7 @@ public sealed class SettingsWindow : Window
             tb.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimaryBrush");
             var b = new Button
             {
-                Content = tb, Width = 40, Height = 40, Margin = new Thickness(0, 0, 4, 0),
+                Content = tb, Width = 46, Height = 46, Margin = new Thickness(0, 0, 4, 0),
                 Cursor = Cursors.Hand, Focusable = false,
                 Background = Brushes.Transparent, BorderThickness = new Thickness(1),
                 Template = PlainButtonTemplate(10),
@@ -1081,6 +1081,13 @@ public sealed class SettingsWindow : Window
         var sp = PageStack();
         sp.Children.Add(PageTitle("插件"));
         sp.Children.Add(PageSubtitle("这里只管开关。放映时点工具栏【插件】按钮打开面板。脚本插件跑在 Lua 沙箱里，权限要确认后才给。"));
+
+        var masterList = new StackPanel();
+        masterList.Children.Add(SwitchRow("启用插件系统",
+            "关闭后工具栏插件入口与所有组件都不可用；已安装插件与配置保留。",
+            _svc.Config.PluginsEnabled,
+            v => { _svc.Config.PluginsEnabled = v; _svc.Config.Save(); RefreshCurrentPage(); }));
+        sp.Children.Add(Card("插件系统", masterList));
 
         var list = new StackPanel();
         var plugins = _svc.Plugins.Loaded.OrderBy(p => p.Manifest.Name).ToArray();
@@ -1257,6 +1264,11 @@ public sealed class SettingsWindow : Window
             "刚点过工具栏时，翻页笔的上下键、左右键直接翻 PPT。",
             cfg.PresenterForwardEnabled,
             v => { cfg.PresenterForwardEnabled = v; cfg.Save(); _svc.UiOrchestrator.RefreshPresenterForward(); }));
+        navList.Children.Add(RowDivider());
+        navList.Children.Add(SwitchRow("音量/亮度键翻页（翻页笔兜底）",
+            "放映中把翻页笔的音量上/下、媒体上/下一曲当作下一页/上一页；按钮失灵也能翻页。会占用系统音量键，不需要请关闭。",
+            cfg.PresenterMediaKeyPageTurn,
+            v => { cfg.PresenterMediaKeyPageTurn = v; cfg.Save(); _svc.UiOrchestrator.RefreshPresenterForward(); }));
         navList.Children.Add(RowDivider());
         var eraseModeChoice = Segmented(
             new[] { ("涂抹", "stroke"), ("圈画", "lasso"), ("滑动清空", "clear") },
@@ -1514,7 +1526,7 @@ public sealed class SettingsWindow : Window
 
         integList.Children.Add(RowDivider());
         integList.Children.Add(SettingsRow("识别时机",
-            "停顿后：抬笔等一会儿再认，最防误识。抬笔即识：最快，适合快速作图。仅手动：只点【AI】按钮才认。",
+            "停顿后：抬笔等一会儿再认，最防误识。抬笔即识：最快，适合快速作图。仅手动：点工具栏【AI】才识别最近一笔（不会关闭 AI）。",
             SegmentedWrap(
                 new[] { ("停顿后", "pause"), ("抬笔即识", "lift"), ("仅手动", "manual") },
                 cfg.AiTriggerTiming,
@@ -1612,7 +1624,21 @@ public sealed class SettingsWindow : Window
             v => { cfg.EnableOnboarding = v; cfg.Save(); }));
         integList.Children.Add(RowDivider());
         integList.Children.Add(SwitchRow("开机自启", "开机后静默启动（仅当前用户）。", cfg.AutoStart,
-            v => { cfg.AutoStart = v; cfg.Save(); if (v) _svc.AutoStart.EnsureRegistered(silent: true); else _svc.AutoStart.Unregister(); }));
+            v =>
+            {
+                if (_svc.IsPortable && v)
+                {
+                    // 便携包承诺不写 HKCU Run；设置页不能绕过 App.OnStartup 的 portable 门禁。
+                    cfg.AutoStart = false;
+                    cfg.Save();
+                    RefreshCurrentPage();
+                    Toast.Show("便携版不写入开机自启，请把启动脚本放到需要的位置。");
+                    return;
+                }
+                cfg.AutoStart = v;
+                cfg.Save();
+                if (v) _svc.AutoStart.EnsureRegistered(silent: true); else _svc.AutoStart.Unregister();
+            }));
         integList.Children.Add(RowDivider());
         integList.Children.Add(SwitchRow("显示托盘图标", "改完要重启才生效。", !cfg.HideTrayIcon,
             v => { cfg.HideTrayIcon = !v; cfg.Save(); }));
@@ -1784,31 +1810,71 @@ public sealed class SettingsWindow : Window
 
         var penList = new StackPanel();
         penList.Children.Add(Row("平滑强度", "越大越跟手，越小越稳。", cfg.PenSmoothing, 0.20, 0.80, 0.05, "F2",
-            v => { cfg.PenSmoothing = v; cfg.Save(); }));
+            v => { cfg.PenSmoothing = v; QueueConfigSave(); _svc.UiOrchestrator.RefreshInkAppearance(); }));
         penList.Children.Add(RowDivider());
         penList.Children.Add(Row("笔锋幅度", "0 = 等宽无笔锋；1 = 快写明显收细。", cfg.PenTaperStrength, 0.0, 1.0, 0.05, "F2",
-            v => { cfg.PenTaperStrength = v; cfg.Save(); }));
+            v => { cfg.PenTaperStrength = v; QueueConfigSave(); _svc.UiOrchestrator.RefreshInkAppearance(); }));
         penList.Children.Add(RowDivider());
         penList.Children.Add(Row("起笔渐入", "落笔由细到粗的过渡长度（点）。0 = 无。", cfg.PenLeadInPoints, 0, 20, 1, "F0",
-            v => { cfg.PenLeadInPoints = (int)v; cfg.Save(); }));
+            v => { cfg.PenLeadInPoints = (int)v; QueueConfigSave(); _svc.UiOrchestrator.RefreshInkAppearance(); }));
         penList.Children.Add(RowDivider());
         penList.Children.Add(Row("收笔收锋", "提笔收细的过渡长度（点）。0 = 无。", cfg.PenLiftPoints, 0, 24, 1, "F0",
-            v => { cfg.PenLiftPoints = (int)v; cfg.Save(); }));
+            v => { cfg.PenLiftPoints = (int)v; QueueConfigSave(); _svc.UiOrchestrator.RefreshInkAppearance(); }));
         penList.Children.Add(RowDivider());
         penList.Children.Add(Row("宽度跟随", "越大宽度变化越快（越活），越小越平滑。", cfg.PenWidthLowpass, 0.10, 0.90, 0.05, "F2",
-            v => { cfg.PenWidthLowpass = v; cfg.Save(); }));
+            v => { cfg.PenWidthLowpass = v; QueueConfigSave(); _svc.UiOrchestrator.RefreshInkAppearance(); }));
         penList.Children.Add(RowDivider());
         penList.Children.Add(Row("压感强度", "0 = 忽略压感（恒等宽）；1 = 强调制。", cfg.PenPressureGain, 0.0, 1.0, 0.05, "F2",
-            v => { cfg.PenPressureGain = v; cfg.Save(); }));
+            v => { cfg.PenPressureGain = v; QueueConfigSave(); _svc.UiOrchestrator.RefreshInkAppearance(); }));
         sp.Children.Add(Card("墨迹", penList));
 
         var hlList = new StackPanel();
         hlList.Children.Add(Row("笔尖横竖比", "0.5 = 竖矩形（横画粗、竖画细）；1.0 = 圆头等宽。", cfg.HighlighterTipRatio, 0.30, 1.0, 0.05, "F2",
-            v => { cfg.HighlighterTipRatio = v; cfg.Save(); }));
+            v => { cfg.HighlighterTipRatio = v; QueueConfigSave(); _svc.UiOrchestrator.RefreshInkAppearance(); }));
         hlList.Children.Add(RowDivider());
         hlList.Children.Add(Row("荧光笔透明度", "越低越透，越不遮文字。", cfg.HighlighterAlpha, 0.20, 0.80, 0.05, "F2",
-            v => { cfg.HighlighterAlpha = v; cfg.Save(); }));
+            v => { cfg.HighlighterAlpha = v; QueueConfigSave(); _svc.UiOrchestrator.RefreshInkAppearance(); }));
         sp.Children.Add(Card("荧光笔", hlList));
+
+        // ———— v1.0.0Beta：高级识别矫正（稳定可选，默认关闭） ————
+        var betaList = new StackPanel();
+        betaList.Children.Add(SwitchRow("高级识别矫正 (Beta)",
+            "多笔几何后处理：缝隙闭合、补笔接续、阴影对齐、文字防误触、课后疑惑询问。默认关闭，建议先在试用课堂验证。",
+            cfg.AdvancedCorrectionEnabled,
+            v => { cfg.AdvancedCorrectionEnabled = v; cfg.Save(); RefreshCurrentPage(); }));
+        if (cfg.AdvancedCorrectionEnabled)
+        {
+            betaList.Children.Add(RowDivider());
+            betaList.Children.Add(SwitchRow("缝隙闭合",
+                "两条近乎相交的直线端点差几毫米没碰上时，延长对齐成拐角。", cfg.AdvCloseGapEnabled,
+                v => { cfg.AdvCloseGapEnabled = v; cfg.Save(); }));
+            betaList.Children.Add(RowDivider());
+            betaList.Children.Add(SwitchRow("补笔接续",
+                "一笔画完后补的一小截，自动接上成一笔。", cfg.AdvContinueStrokeEnabled,
+                v => { cfg.AdvContinueStrokeEnabled = v; cfg.Save(); }));
+            betaList.Children.Add(RowDivider());
+            betaList.Children.Add(SwitchRow("阴影斜杠对齐",
+                "矩形内多条斜杠统一角度、两端吸附到轮廓。", cfg.AdvHatchAlignEnabled,
+                v => { cfg.AdvHatchAlignEnabled = v; cfg.Save(); }));
+            betaList.Children.Add(RowDivider());
+            betaList.Children.Add(SwitchRow("文字 / 公式防误触",
+                "密集短笔画不做图形规整，避免把汉字、公式认成箭头或直线。", cfg.TextGuardEnabled,
+                v => { cfg.TextGuardEnabled = v; cfg.Save(); }));
+            betaList.Children.Add(RowDivider());
+            betaList.Children.Add(SwitchRow("疑惑笔迹课后询问",
+                "把握不大的识别结果先保留，下课后单独询问；否决的形状不再自动规整。", cfg.DoubtReviewEnabled,
+                v => { cfg.DoubtReviewEnabled = v; cfg.Save(); }));
+            betaList.Children.Add(RowDivider());
+            betaList.Children.Add(Row("缝隙容忍", "端点距离小于此值才闭合（毫米）。", cfg.AdvGapToleranceMm, 0.5, 20, 0.5, "F1",
+                v => { cfg.AdvGapToleranceMm = v; QueueConfigSave(); }));
+            betaList.Children.Add(RowDivider());
+            betaList.Children.Add(Row("接续容忍", "补笔起点离已画终点多近才接上（毫米）。", cfg.AdvSnapToleranceMm, 1, 30, 1, "F0",
+                v => { cfg.AdvSnapToleranceMm = v; QueueConfigSave(); }));
+            betaList.Children.Add(RowDivider());
+            betaList.Children.Add(Row("文字判据灵敏度", "越大越容易判为文字（越保守）。", cfg.TextGuardSensitivity, 0.5, 2.0, 0.1, "F1",
+                v => { cfg.TextGuardSensitivity = v; QueueConfigSave(); }));
+        }
+        sp.Children.Add(Card("高级识别矫正 (Beta)", betaList));
 
         var resetRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4, 0, 24, 24) };
         resetRow.Children.Add(GhostButton("恢复默认笔墨参数", "IconReset", () =>
@@ -1817,6 +1883,7 @@ public sealed class SettingsWindow : Window
             cfg.PenLiftPoints = 12; cfg.PenWidthLowpass = 0.30; cfg.PenPressureGain = 0.5;
             cfg.HighlighterTipRatio = 0.5; cfg.HighlighterAlpha = 0.43;
             cfg.Save();
+            _svc.UiOrchestrator.RefreshInkAppearance();
             RefreshCurrentPage();
             Toast.Show("已恢复默认笔墨参数。");
         }));
@@ -2027,7 +2094,7 @@ public sealed class SettingsWindow : Window
             var btn = new Button
             {
                 Content = tb,
-                Height = 44,
+                Height = 48,
                 MinWidth = 48,
                 Padding = new Thickness(14, 0, 14, 0),
                 Margin = new Thickness(0, 0, 2, 0),
@@ -2069,7 +2136,7 @@ public sealed class SettingsWindow : Window
             var btn = new Button
             {
                 Content = tb,
-                Height = 44,
+                Height = 48,
                 MinWidth = 48,
                 Padding = new Thickness(14, 0, 14, 0),
                 Margin = new Thickness(0, 0, 2, 2),
@@ -2110,7 +2177,7 @@ public sealed class SettingsWindow : Window
         var b = new Button
         {
             Content = row,
-            Height = 44,
+            Height = 48,
             Padding = new Thickness(16, 0, 16, 0),
             Cursor = Cursors.Hand,
             Focusable = false,
@@ -2138,7 +2205,7 @@ public sealed class SettingsWindow : Window
         var b = new Button
         {
             Content = row,
-            Height = 44,
+            Height = 48,
             Padding = new Thickness(14, 0, 14, 0),
             Cursor = Cursors.Hand,
             Focusable = false,
@@ -2178,7 +2245,7 @@ public sealed class SettingsWindow : Window
 
         public Switch(bool initial)
         {
-            Width = 54; Height = 44;
+            Width = 54; Height = 48;
             CornerRadius = new CornerRadius(22);
             Background = Brushes.Transparent;
             Cursor = Cursors.Hand;

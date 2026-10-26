@@ -21,7 +21,31 @@ public sealed partial class UiOrchestrator
     /// <summary>AI Power 当前状态（工具栏按钮激活态查询）。</summary>
     public bool AiPowerOn => _svc.Config.AiEnabled;
 
-    /// <summary>切换 AI Power（工具栏【AI 规整】按钮 = 开关）。</summary>
+    /// <summary>切换 AI Power（工具栏【AI 规整】按钮 = 开关；仅手动模式下改为“识别最近一笔”）。
+    /// 手动模式此前把按钮当成纯电源：第一次点开顺带识别一笔，第二次点又把 AI 关掉，
+    /// 无法连续手动识别。现在 manual 模式下按钮是幂等的“识别最近一笔”，电源开关留在设置页。</summary>
+    public void OnToolbarAiPressed()
+    {
+        if (_svc.Config.AiTriggerTiming == "manual")
+        {
+            var last = _svc.InkEngine.LastDrawableStroke();
+            if (last is null)
+            {
+                Toast.Show("还没有可识别的笔迹。");
+                return;
+            }
+            if (!_svc.Config.AiEnabled)
+            {
+                SetAiPower(true, notify: false);
+                Toast.Show("AI 正在启动，识别最近一笔…");
+            }
+            RunAssist(last, manual: true);
+            return;
+        }
+        ToggleAiPower();
+    }
+
+    /// <summary>切换 AI Power（非手动模式保留原电源开关语义）。</summary>
     public void ToggleAiPower() => SetAiPower(!_svc.Config.AiEnabled, notify: true);
 
     /// <summary>
@@ -42,15 +66,6 @@ public sealed partial class UiOrchestrator
             if (on)
             {
                 _ = _svc.PythonBridge.EnsureStartedAsync();     // 池线程冷启动，不冻结界面
-                // 仅手动模式（v1.1.0 修复）：该模式的承诺是「仅点【AI】才认」，但按钮此前
-                // 只是电源开关——识别永远不发生，选了这个模式等于把 AI 关了。开机的同时
-                // 对最后一笔跑一次识别（本段已在 UI 线程；冷启动未就绪时 RunAssist 会给出
-                //「稍后再试」提示，识别本体在 Task.Run 里不卡界面）。
-                if (_svc.Config.AiTriggerTiming == "manual" &&
-                    _svc.InkEngine.LastDrawableStroke() is { } lastStroke)
-                {
-                    RunAssist(lastStroke, manual: true);
-                }
             }
             else
             {
@@ -141,6 +156,16 @@ public sealed partial class UiOrchestrator
         }
         var engine = _svc.InkEngine;
 
+        // Beta 文字/公式防误触：汉字/公式由大量密集短笔画组成，常被单笔识别误认成
+        // 箭头/直线。先取锁内快照，后台/自动识别期间老师可能仍在写下一笔。
+        if (cfg.AdvancedCorrectionEnabled && cfg.TextGuardEnabled && engine.Profile.PxPerMm > 0
+            && AdvancedCorrector.LooksLikeText(target, engine.SnapshotCurrentPageStrokes(),
+                engine.Profile.PxPerMm, cfg.TextGuardSensitivity))
+        {
+            if (manual) Toast.Show("这笔看起来像写字/公式，没做图形规整。可在设置里关掉「文字防误触」。");
+            return;
+        }
+
         // 识别范围：recent 合并最近 N 笔
         StrokeData scope = target;
         List<StrokeData> scopeStrokes = new() { target };
@@ -157,6 +182,10 @@ public sealed partial class UiOrchestrator
             bool bridgeOk = true;
             try
             {
+                // 手动第一次识别要覆盖 Python 冷启动（低配大屏可达 18~35s）。先单独
+                // await 启动，再把用户设置的“识别超时”用于真正的识别阶段；否则 3s
+                // 默认超时会在桥还没就绪时把结果误报成“未识别”。
+                if (manual) await _svc.PythonBridge.EnsureStartedAsync();
                 var recTask = _svc.PythonBridge.RecognizeAsync(scope);
                 if (await Task.WhenAny(recTask, Task.Delay(timeoutMs)) == recTask)
                 {
@@ -173,9 +202,16 @@ public sealed partial class UiOrchestrator
                 if (shape is null)
                 {
                     if (manual)
+                    {
+                        // v1.1.2：桥不可用时给出具体原因（缺 NumPy / 识别模块 / 超时），
+                        // 而不是笼统的"子进程未就绪"——用户才知道下一步该做什么。
+                        string? reason = _svc.PythonBridge.LastUnavailableReason;
                         Toast.Show(bridgeOk
                             ? "未识别出规整图形（支持：直线 / 虚线 / 点线 / 箭头 / 圆 / 椭圆 / 三角形 / 矩形 / 多边形 / 对勾 / 叉 / 波浪）"
-                            : "AI 桥不可用（Python 子进程未就绪，稍后再试）");
+                            : string.IsNullOrWhiteSpace(reason)
+                                ? "AI 桥不可用（Python 子进程未就绪，稍后再试）"
+                                : "AI 桥不可用：" + reason);
+                    }
                     return;   // 自动模式静默：识别失败不打扰课堂
                 }
                 // 置信度阈值门禁
@@ -192,6 +228,11 @@ public sealed partial class UiOrchestrator
                         Toast.Show($"识别为「{ShapeName(shape.Shape)}」，不在你启用的形状里，未规整。");
                     return;
                 }
+                // Beta 疑惑笔迹：置信度落在区间时保留候选，课后询问；不改变当前是否规整。
+                if (cfg.AdvancedCorrectionEnabled && cfg.DoubtReviewEnabled
+                    && shape.Confidence >= cfg.DoubtConfidenceLow && shape.Confidence < cfg.DoubtConfidenceHigh)
+                    RecordDoubt(engine, target, shape);
+
                 if (!manual && cfg.ShapeAssistMode == "bubble" && !_assistSessionOff)
                     ShowAssistBubble(engine, target, scopeStrokes, shape, ShapeName(shape.Shape));
                 else
@@ -230,7 +271,7 @@ public sealed partial class UiOrchestrator
         }
     }
 
-    private void CommitRegularized(InkEngine engine, StrokeData target, List<StrokeData> scopeStrokes,
+    private StrokeData? CommitRegularized(InkEngine engine, StrokeData target, List<StrokeData> scopeStrokes,
         PythonBridge.RecognizedShape shape, string name, bool manual = false)
     {
         var regularized = new StrokeData(target.Pen);
@@ -246,9 +287,13 @@ public sealed partial class UiOrchestrator
         {
             if (manual || _svc.Config.AiHighlightOnSuccess)
                 Toast.Show($"已规整为「{name}」（置信度 {shape.Confidence:P0}）· 可撤销");
+            // Beta 多笔几何后处理：在规整笔落页后再分析页面关系（后台，不打断书写）。
+            if (_svc.Config.AdvancedCorrectionEnabled)
+                RunAdvancedCorrection(engine, regularized);
+            return regularized;
         }
-        else if (manual)
-            Toast.Show("这笔已被撤销或擦掉了。");
+        if (manual) Toast.Show("这笔已被撤销或擦掉了。");
+        return null;
     }
 
     /// <summary>识别范围 recent：把页面上最近 N 笔的点合并成一笔（多笔组合图形用）。
@@ -282,6 +327,69 @@ public sealed partial class UiOrchestrator
         foreach (var s in raw.Split(new[] { ';', ',', '；', '，', ' ' }, StringSplitOptions.RemoveEmptyEntries))
             set.Add(s.Trim());
         return set;
+    }
+
+    // ═══════════ v1.0.0Beta 高级矫正 / 疑惑笔迹（稳定可选） ═══════════
+
+    private readonly List<(int Slide, StrokeData Stroke, string Shape, double Confidence)> _doubts = new();
+
+    /// <summary>当前待课后确认的疑惑笔迹数。</summary>
+    public int DoubtCount => _doubts.Count;
+
+    /// <summary>取出并清空疑惑笔迹（课后询问）。</summary>
+    public List<(int Slide, StrokeData Stroke, string Shape, double Confidence)> TakeDoubts()
+    {
+        var copy = new List<(int, StrokeData, string, double)>(_doubts);
+        _doubts.Clear();
+        return copy;
+    }
+
+    private void RecordDoubt(InkEngine engine, StrokeData stroke, PythonBridge.RecognizedShape shape)
+    {
+        if (_doubts.Count >= 50) _doubts.RemoveAt(0);
+        _doubts.Add((engine.CurrentSlideIndex, stroke, shape.Shape, shape.Confidence));
+    }
+
+    /// <summary>后台几何后处理：只读快照，结果回 UI 线程提交到撤销栈。</summary>
+    private void RunAdvancedCorrection(InkEngine engine, StrokeData trigger)
+    {
+        var cfg = _svc.Config;
+        double pxPerMm = engine.Profile.PxPerMm;
+        if (pxPerMm <= 0 || trigger.Points.Count < 2) return;
+        double gapPx = pxPerMm * Math.Clamp(cfg.AdvGapToleranceMm, 0.5, 20);
+        double snapPx = pxPerMm * Math.Clamp(cfg.AdvSnapToleranceMm, 1, 30);
+        bool doGap = cfg.AdvCloseGapEnabled, doCont = cfg.AdvContinueStrokeEnabled, doHatch = cfg.AdvHatchAlignEnabled;
+        int slide = engine.CurrentSlideIndex;
+        bool notify = cfg.AiHighlightOnSuccess;
+
+        Task.Run(() =>
+        {
+            try
+            {
+            StrokeData[] snapshot = engine.SnapshotCurrentPageStrokes();
+            List<AdvancedCorrector.Correction> corrs;
+            if (doCont) corrs = AdvancedCorrector.TryContinueStroke(trigger, snapshot, snapPx);
+            else corrs = new List<AdvancedCorrector.Correction>();
+            if (corrs.Count == 0 && doGap) corrs = AdvancedCorrector.TryCloseGap(trigger, snapshot, gapPx);
+            if (corrs.Count == 0 && doHatch) corrs = AdvancedCorrector.TryAlignHatch(trigger, snapshot, gapPx);
+            if (corrs.Count == 0) return;
+
+            _ = _app.Dispatcher.BeginInvoke(() =>
+            {
+                if (engine.CurrentSlideIndex != slide) return;   // 已翻页/换页
+                string? desc = null;
+                foreach (var c in corrs)
+                {
+                    if (c.Replacement.Points.Count == 0)
+                        engine.RemoveStroke(c.Target);
+                    else if (engine.ReplaceStroke(c.Target, c.Replacement) && !string.IsNullOrEmpty(c.Description))
+                        desc = c.Description;
+                }
+                if (notify && desc is not null) Toast.Show(desc + " · 可撤销");
+            });
+            }
+            catch (Exception ex) { AppLog.Instance.Warn($"高级识别矫正失败：{ex.GetType().Name}: {ex.Message}"); }
+        });
     }
 
     /// <summary>形状中文名（与识别引擎 v2.1 的形状集合一一对应）。</summary>

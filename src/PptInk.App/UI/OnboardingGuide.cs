@@ -151,7 +151,8 @@ public sealed class OnboardingGuideElement : StageElement
         _isActive = true;
         RelocateToScreen();   // 此时 ShowScreen 已由放映事件更新（Start 仅在 S1 后调用）
         Visibility = Visibility.Visible;
-        BeginAnimation(OpacityProperty, Fade(0, 1, 220, EaseOut.Power3));
+        if (Core.AppConfig.Current.ReduceMotion) { BeginAnimation(OpacityProperty, null); Opacity = 1; }
+        else BeginAnimation(OpacityProperty, Fade(0, 1, 220, EaseOut.Power3));
         Advance();              // 进第 0 步（欢迎）
         _advance.Start();
     }
@@ -161,6 +162,7 @@ public sealed class OnboardingGuideElement : StageElement
     {
         if (!_isActive) return;
         _advance.Stop();
+        if (Core.AppConfig.Current.ReduceMotion) { Visibility = Visibility.Collapsed; return; }
         var fade = Fade(Opacity, 0, 140, EaseIn.Power3);
         fade.Completed += (_, _) => Visibility = Visibility.Collapsed;
         BeginAnimation(OpacityProperty, fade);
@@ -173,7 +175,8 @@ public sealed class OnboardingGuideElement : StageElement
         if (!StageUiLayout.EnterModal(this, preserveChromeUnderHole: true)) return;
         RelocateToScreen();   // 放映屏可能已变（换屏重放）
         Visibility = Visibility.Visible;
-        BeginAnimation(OpacityProperty, Fade(0, 1, 160, EaseOut.Power3));
+        if (Core.AppConfig.Current.ReduceMotion) { BeginAnimation(OpacityProperty, null); Opacity = 1; }
+        else BeginAnimation(OpacityProperty, Fade(0, 1, 160, EaseOut.Power3));
         _advance.Start();
     }
 
@@ -196,6 +199,7 @@ public sealed class OnboardingGuideElement : StageElement
         _advance.Stop();
         _isActive = false;
         StageUiLayout.ExitModal(this);
+        if (Core.AppConfig.Current.ReduceMotion) { Visibility = Visibility.Collapsed; Dismissed?.Invoke(); return; }
         var fade = Fade(Opacity, 0, 170, EaseIn.Power3);
         fade.Completed += (_, _) => Visibility = Visibility.Collapsed;
         BeginAnimation(OpacityProperty, fade);
@@ -218,6 +222,7 @@ public sealed class OnboardingGuideElement : StageElement
         _advance.Stop();
         _isActive = false;
         StageUiLayout.ExitModal(this);   // 与 Start 的 EnterModal 配对（租约泄漏 = 全部浮层静默失效）
+        if (Core.AppConfig.Current.ReduceMotion) { Visibility = Visibility.Collapsed; Completed?.Invoke(); return; }
         var fade = Fade(Opacity, 0, 200, EaseIn.Power3);
         fade.Completed += (_, _) => Visibility = Visibility.Collapsed;
         BeginAnimation(OpacityProperty, fade);
@@ -289,11 +294,21 @@ public sealed class OnboardingGuideElement : StageElement
         // 4) 进度点
         RenderDots();
 
-        // 5) 进入动画：卡片上浮 + 淡入
-        var slide = new DoubleAnimation(18, 0, new Duration(TimeSpan.FromMilliseconds(320)))
-        { EasingFunction = PowerEase3Out };
-        _cardSlide.BeginAnimation(TranslateTransform.YProperty, slide);
-        _card.BeginAnimation(OpacityProperty, Fade(0, 1, 280, EaseOut.Power3));
+        // 5) 进入动画：卡片上浮 + 淡入（减少动效时直接到终态）
+        if (Core.AppConfig.Current.ReduceMotion)
+        {
+            _cardSlide.BeginAnimation(TranslateTransform.YProperty, null);
+            _cardSlide.Y = 0;
+            _card.BeginAnimation(OpacityProperty, null);
+            _card.Opacity = 1;
+        }
+        else
+        {
+            var slide = new DoubleAnimation(18, 0, new Duration(TimeSpan.FromMilliseconds(320)))
+            { EasingFunction = PowerEase3Out };
+            _cardSlide.BeginAnimation(TranslateTransform.YProperty, slide);
+            _card.BeginAnimation(OpacityProperty, Fade(0, 1, 280, EaseOut.Power3));
+        }
     }
 
     private void RenderIconBadge(string iconName)
@@ -427,13 +442,15 @@ public sealed class OnboardingGuideElement : StageElement
         Canvas.SetTop(b, r.Y - gap);
         b.Width = r.Width + gap * 2;
         b.Height = r.Height + gap * 2;
-        // 呼吸脉动（v0.8.0 放缓收敛：1400ms / 幅度 1.03——引导期更安静，
-        // 12Hz 微颤会与大屏 60Hz 刷新拍频产生不舒适感）
-        var breath = new DoubleAnimation(1.0, 1.03, new Duration(TimeSpan.FromMilliseconds(1400)))
-        { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
         b.RenderTransform = new ScaleTransform(1, 1, b.Width / 2, b.Height / 2);
-        b.RenderTransform.BeginAnimation(ScaleTransform.ScaleXProperty, breath);
-        b.RenderTransform.BeginAnimation(ScaleTransform.ScaleYProperty, breath.Clone());
+        if (!Core.AppConfig.Current.ReduceMotion)
+        {
+            // 呼吸脉动（1400ms / 幅度 1.03，避免与大屏 60Hz 刷新拍频）
+            var breath = new DoubleAnimation(1.0, 1.03, new Duration(TimeSpan.FromMilliseconds(1400)))
+            { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever };
+            b.RenderTransform.BeginAnimation(ScaleTransform.ScaleXProperty, breath);
+            b.RenderTransform.BeginAnimation(ScaleTransform.ScaleYProperty, breath.Clone());
+        }
         return b;
     }
 
@@ -511,7 +528,7 @@ public sealed class OnboardingGuideElement : StageElement
         tertiary = new Button
         {
             Content = "我不想使用 PptInk「本次隐藏」",
-            Height = 36,
+            Height = 44,
             Padding = new Thickness(12, 0, 12, 0),
             FontSize = 12,
             Foreground = Solid(Color.FromRgb(0x8E, 0x9C, 0x98)),

@@ -44,7 +44,7 @@ public sealed class PluginManager
     private readonly HashSet<string> _disabledIds = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>插件是否允许在工具栏快捷面板中使用；设置页开关仅改变可用性，不自动弹出组件。</summary>
-    public bool IsEnabled(IPlugin plugin) => !_disabledIds.Contains(plugin.Manifest.Id);
+    public bool IsEnabled(IPlugin plugin) => Core.AppConfig.Current.PluginsEnabled && !_disabledIds.Contains(plugin.Manifest.Id);
 
     /// <summary>兼容运行态诊断查询。</summary>
     public bool IsActive(IPlugin plugin) => _activeIds.Contains(plugin.Manifest.Id) && plugin is not ScriptPlugin { IsFaulted: true };
@@ -373,13 +373,12 @@ public sealed class PluginManager
             return;
         }
         var api = new HostApiBridge(_ink, _ai, plugin.Manifest);
-        // 权限确认：首次启用含敏感权限的插件时弹一次确认。
-        // v1.1.0：network 不再参与弹窗 —— 沙箱没有注入任何网络 API，声明了也不生效，
-        // 为它弹"授权"对话框是误导（授权心理学：用户以为拒了就挡住了什么）。
-        if (plugin.Manifest.Permissions.Any(p => p is "file" or "clipboard") &&
+        // 内置插件随主程序发布，不应在课堂全屏里弹权限框；第三方脚本插件才需要确认。
+        bool builtin = plugin.Manifest.Id.StartsWith("builtin.", StringComparison.OrdinalIgnoreCase);
+        if (!builtin && plugin.Manifest.Permissions.Any(p => p is "file" or "clipboard") &&
             !IsTrusted(plugin.Manifest.Id))
         {
-            var msg = $"插件「{plugin.Manifest.Name}」申请权限：\n{string.Join("、", plugin.Manifest.Permissions)}\n\n仅本次放映允许？";
+            var msg = $"插件「{plugin.Manifest.Name}」申请权限：\n{string.Join("、", plugin.Manifest.Permissions)}\n\n仅本次运行允许？";
             if (MessageBox.Show(msg, "插件权限确认", MessageBoxButton.YesNo) != MessageBoxResult.Yes)
                 return;
             Trust(plugin.Manifest.Id);

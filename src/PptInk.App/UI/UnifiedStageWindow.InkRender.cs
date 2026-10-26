@@ -172,6 +172,13 @@ public sealed partial class UnifiedStageWindow
         }
     }
 
+    /// <summary>笔墨参数/荧光笔透明度等运行时变化：强制下一次渲染重合成页面缓存。</summary>
+    public void InvalidateInkComposition()
+    {
+        _forceRecompose = true;
+        Invalidate();
+    }
+
     public void PreWarmRender()
     {
         // 放映屏感知（S0 预热时尚无放映信息 → ShowScreen 默认主屏，S1 激活时再对位）

@@ -44,7 +44,7 @@ internal static class AiProvisioner
     // HTTP UA 跟程序集版本（v1.1.0 统一 —— 原先硬编码 "PptInk/0.9.9"，与实际版本漂移，
     // 排障时无法从服务端日志判断用户跑的哪个版本）
     private static readonly string UserAgent =
-        "PptInk/" + (typeof(AiProvisioner).Assembly.GetName().Version?.ToString(3) ?? "1.1.1");
+        "PptInk/" + (typeof(AiProvisioner).Assembly.GetName().Version?.ToString(3) ?? "1.1.2");
 
     public sealed record Result(bool Ok, string Message);
 

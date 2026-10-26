@@ -28,6 +28,12 @@ internal static class FileDialogs
         return dlg.ShowDialog(owner) == true ? dlg.FileName : null;
     }
 
+    public static string? ImportDirectory(Window owner)
+    {
+        var dlg = new OpenFolderDialog { Title = "导入插件目录（含 manifest.json）" };
+        return dlg.ShowDialog(owner) == true ? dlg.FolderName : null;
+    }
+
     public static string? SaveZip(Window owner, string suggestedName)
     {
         var dlg = new SaveFileDialog

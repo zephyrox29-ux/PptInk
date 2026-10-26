@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.1.1.0" name="PptInk.App"/>
+  <assemblyIdentity version="1.1.2.0" name="PptInk.App"/>
 
   <!-- 以当前用户权限运行：与 PowerPoint 放映进程权限保持一致，
        避免 COM 跨完整性级别调用失败（学校机房常见管理员 PPT + 普通用户工具问题） -->

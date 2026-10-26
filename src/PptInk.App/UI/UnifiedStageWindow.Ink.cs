@@ -46,6 +46,11 @@ public sealed partial class UnifiedStageWindow
 
     private bool _mouseInking;
 
+    // 手掌接触守卫：由 WPF Touch 事件填充（接触面积），B/C 通道按设备 id / 短窗口查询。
+    // 说明：StylusPlugIn 本身不提供接触面积；这是 B 通道在没有 WM_POINTER 元数据时的兜底。
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, bool> _touchPalmById = new();
+    private long _palmBlockUntilTick;
+
     /// <summary>输入状态牌刷新泵（250ms 轮询 Invalidate）：状态牌内容（穿透位/
     /// 会话）随轮询刷新；指针坐标由各输入回调缓存（Move 不主动重绘 —— 高频
     /// InvalidateVisual 会拖累渲染管线，轮询粒度足够判断「在不在层上」）。</summary>
@@ -79,6 +84,7 @@ public sealed partial class UnifiedStageWindow
 
         // 通道 B（WPF 墨迹线程报点，绕过 UI 消息泵，第一笔零延迟）
         _plugIn.SuppressInkAtPoint = IsInkStartBlockedByUi;
+        _plugIn.SuppressInkForDevice = IsPalmSuppressedDevice;
         _plugIn.PointDown += OnRawDown;
         _plugIn.PointMove += OnRawMove;
         _plugIn.PointUp += OnRawUp;
@@ -89,6 +95,14 @@ public sealed partial class UnifiedStageWindow
         _inkLayer.MouseLeftButtonDown += OnMouseInkDown;
         _inkLayer.MouseMove += OnMouseInkMove;
         _inkLayer.MouseLeftButtonUp += OnMouseInkUp;
+
+        // WPF 的 StylusPlugIn 只能拿到压力/坐标，没有接触面积。用同一触点提升出的
+        // TouchPoint.Size 做手掌面积判定，并按 TouchDevice.Id 缓存；若 StylusPlugIn 的
+        // 设备 id 与 Touch id 在驱动上不一致，则用 120ms 的短窗口兜底（宁可拒绝一次
+        // 真实起笔，也不让整个手掌落墨；真实手指重触即可恢复）。
+        _inkLayer.PreviewTouchDown += OnTouchContactDown;
+        _inkLayer.PreviewTouchMove += OnTouchContactMove;
+        _inkLayer.PreviewTouchUp += OnTouchContactUp;
 
         // 状态牌指针缓存（只记坐标不重绘，250ms 轮询统一刷新）
         _inkLayer.MouseMove += (_, e) => { var p = e.GetPosition(_inkLayer); NotePointer(p.X, p.Y); };
@@ -414,6 +428,8 @@ public sealed partial class UnifiedStageWindow
         private double _lastX = double.NaN, _lastY = double.NaN;
         private bool _ignoreActive;
         public Func<double, double, bool>? SuppressInkAtPoint { get; set; }
+        /// <summary>按设备 id 拒绝被触摸面积判定为手掌的起笔；无映射时返回 false。</summary>
+        public Func<int, bool>? SuppressInkForDevice { get; set; }
 
         /// <summary>复位栅栏（舞台停用/会话被外部终结时调用）。</summary>
         public void ResetActive() { _activeId = 0; _ignoreActive = false; _lastX = _lastY = double.NaN; }
@@ -431,12 +447,15 @@ public sealed partial class UnifiedStageWindow
             _activeTick = now;
             _lastX = _lastY = double.NaN;
             // 原始 StylusPlugIn 位于全屏底层，不能只依赖 WPF 的 routed-event Handled。
-            // 若 Down 命中工具栏/翻页栏/弹层，本指触点整轮忽略到 Up，绝不“滑出控件后落墨”。
-            _ignoreActive = SuppressInkAtPoint?.Invoke(points[0].X, points[0].Y) == true;
+            // 若 Down 命中工具栏/翻页栏/弹层/手掌，本指触点整轮忽略到 Up，绝不落墨。
+            _ignoreActive = SuppressInkAtPoint?.Invoke(points[0].X, points[0].Y) == true
+                            || SuppressInkForDevice?.Invoke(rawStylusInput.StylusDeviceId) == true;
             if (_ignoreActive) return;
             long ts = InkClock.NowMs();
-            foreach (var p in points)
-                PointDown?.Invoke(new InkPoint(p.X, p.Y, PressureOf(p), ts));
+            // Down 批的后续点不能丢：首点创建会话，其余点按 Move 喂入（共享会话锁）。
+            PointDown?.Invoke(new InkPoint(points[0].X, points[0].Y, PressureOf(points[0]), Stamp(ts, 0, points.Count)));
+            for (int i = 1; i < points.Count; i++)
+                PointMove?.Invoke(new InkPoint(points[i].X, points[i].Y, PressureOf(points[i]), Stamp(ts, i, points.Count)));
         }
 
         protected override void OnStylusMove(RawStylusInput rawStylusInput)
@@ -447,11 +466,13 @@ public sealed partial class UnifiedStageWindow
             if (_ignoreActive) return;   // 被屏蔽触点不产生墨迹，也不得刷新保鲜期 —— 否则 Move 持续击穿 2 秒陈旧超时，会话槽被无限期占用
             long now = Environment.TickCount64;
             long ts = InkClock.NowMs();
-            foreach (var p in rawStylusInput.GetStylusPoints())
+            var pts = rawStylusInput.GetStylusPoints();
+            for (int i = 0; i < pts.Count; i++)
             {
+                var p = pts[i];
                 if (!double.IsNaN(_lastX) && Math.Abs(p.X - _lastX) + Math.Abs(p.Y - _lastY) > 600 && now - _activeTick < 25) continue;
                 _lastX = p.X; _lastY = p.Y; _activeTick = now;
-                PointMove?.Invoke(new InkPoint(p.X, p.Y, PressureOf(p), ts));
+                PointMove?.Invoke(new InkPoint(p.X, p.Y, PressureOf(p), Stamp(ts, i, pts.Count)));
             }
         }
 
@@ -468,11 +489,24 @@ public sealed partial class UnifiedStageWindow
                 return;
             }
             long ts = InkClock.NowMs();
-            foreach (var p in rawStylusInput.GetStylusPoints())
-                PointUp?.Invoke(new InkPoint(p.X, p.Y, PressureOf(p), ts));
+            var pts = rawStylusInput.GetStylusPoints();
+            // Up 批多点：前序点改为 Move，最后一点才提交 Up；旧实现只提交首点，
+            // 笔画尾段会被截断、收锋位置也提前。
+            for (int i = 0; i + 1 < pts.Count; i++)
+                PointMove?.Invoke(new InkPoint(pts[i].X, pts[i].Y, PressureOf(pts[i]), Stamp(ts, i, pts.Count)));
+            var last = pts.Count > 0 ? pts[^1] : default;
+            if (pts.Count > 0)
+                PointUp?.Invoke(new InkPoint(last.X, last.Y, PressureOf(last), Stamp(ts, pts.Count - 1, pts.Count)));
             _activeId = 0;
             _lastX = _lastY = double.NaN;
         }
+
+        /// <summary>同一批报点的人工时间分布：WPF StylusPoint 不提供时间戳，按 4ms
+        /// （约 250Hz）递增，至少避免批内全部为同一时刻导致速度虚高。最后一个点
+        /// 用 now，保证与后续事件时间单调。</summary>
+        private static long Stamp(long nowMs, int index, int count)
+            => nowMs - (long)Math.Max(0, count - 1 - index) * 4;
+
 
         /// <summary>压感钳制（手写最优：手指/被动手写笔无真实压感，此值恒近 0.5 中性，
         /// 笔锋粗细由速度链路模拟；此处仅防异常值）。</summary>

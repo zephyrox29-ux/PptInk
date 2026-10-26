@@ -26,8 +26,12 @@ public partial class AvalonLuaEditorHost : UserControl
         LoadLuaHighlighting();
         Editor.TextArea.TextEntered += OnTextEntered;
         Editor.TextArea.PreviewKeyDown += OnPreviewKeyDown;
+        Editor.TextChanged += (_, _) => TextChanged?.Invoke(this, EventArgs.Empty);
         RefreshCandidates();
     }
+
+    /// <summary>脚本文本变化（工程脏标记用）。</summary>
+    public event EventHandler? TextChanged;
 
     /// <summary>脚本文本（双向：设置外部内容，读取当前编辑内容）。</summary>
     public string Text

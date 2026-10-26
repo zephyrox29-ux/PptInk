@@ -57,6 +57,9 @@ internal static class BridgeProbe
             }
 
             bool cv2Available;
+            bool numpyAvailable;
+            bool recognizerAvailable;
+            string dependencyDetail;
             using (var helloDoc = JsonDocument.Parse(helloLine))
             {
                 var hello = helloDoc.RootElement;
@@ -67,8 +70,23 @@ internal static class BridgeProbe
                     return Fail(stages, "AI 桥握手协议不匹配", stderr);
                 }
                 cv2Available = hello.TryGetProperty("cv2", out var cv2) && cv2.ValueKind == JsonValueKind.True;
+                // v1.1.2：桥现在即使缺依赖也保持可服务 —— 这里把依赖状态作为独立环节报出来，
+                // 避免"握手正常但识别一定失败"被笼统归因成算法问题。
+                numpyAvailable = !hello.TryGetProperty("numpy", out var npEl) || npEl.ValueKind != JsonValueKind.False;
+                recognizerAvailable = !hello.TryGetProperty("recognizer", out var recEl) || recEl.ValueKind != JsonValueKind.False;
+                dependencyDetail = hello.TryGetProperty("numpy_error", out var ne) && ne.ValueKind == JsonValueKind.String
+                    ? ne.GetString() ?? "" : "";
             }
             stages.Add(new("桥握手", true, "正常"));
+            if (!numpyAvailable || !recognizerAvailable)
+            {
+                stages.Add(new("NumPy / 识别模块", false, numpyAvailable ? "识别模块未加载" : "缺少 numpy"));
+                return Fail(stages, numpyAvailable
+                    ? "AI 识别模块（pptink_recog）无法导入，请重新生成便携包或运行「快速检测 AI 功能」修复。"
+                    : "Python 环境缺少 NumPy，无法进行形状识别。" +
+                      (string.IsNullOrWhiteSpace(dependencyDetail) ? "" : "（" + dependencyDetail + "）"), stderr);
+            }
+            stages.Add(new("NumPy / 识别模块", true, "正常"));
 
             var points = Enumerable.Range(0, 48)
                 .Select(i => new object[]

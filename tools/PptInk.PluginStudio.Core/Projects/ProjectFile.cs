@@ -17,7 +17,7 @@ public static class ProjectFile
         File.WriteAllText(Path.Combine(projectDir, FileName), PluginManifestJson.Serialize(manifest));
 
         var entryRel = (manifest.Entry ?? "main.lua").Replace('\\', '/').Replace('/', Path.DirectorySeparatorChar);
-        var entryFull = Path.Combine(projectDir, entryRel);
+        var entryFull = ResolveInside(projectDir, entryRel, "入口脚本");
         Directory.CreateDirectory(Path.GetDirectoryName(entryFull)!);
         File.WriteAllText(entryFull, project.LuaSource ?? "");
 
@@ -44,7 +44,7 @@ public static class ProjectFile
 
         var project = new ProjectModel { Manifest = manifest, ProjectPath = metaPath };
         var entryRel = (manifest.Entry ?? "main.lua").Replace('\\', '/').Replace('/', Path.DirectorySeparatorChar);
-        var entryFull = Path.Combine(projectDir, entryRel);
+        var entryFull = ResolveInside(projectDir, entryRel, "入口脚本");
         if (File.Exists(entryFull)) project.LuaSource = File.ReadAllText(entryFull);
 
         var resourcesDir = Path.Combine(projectDir, "resources");
@@ -58,4 +58,18 @@ public static class ProjectFile
     }
 
     private static PluginManifest ManifestValidatorNormalize(PluginManifest m) => ManifestValidator.Normalize(m);
+
+    /// <summary>不可信工程/导入包的 Entry 只能落在工程目录内；绝对路径、..、盘符
+    /// 相对路径都拒绝。Save 与 Load 共用，防止“打开恶意工程→点保存”任意写文件。</summary>
+    private static string ResolveInside(string root, string relative, string what)
+    {
+        if (PathSafety.IsUnsafeRelative(relative))
+            throw new InvalidDataException($"{what}路径非法：{relative}");
+        string fullRoot = Path.GetFullPath(root);
+        string full = Path.GetFullPath(Path.Combine(fullRoot, relative));
+        string prefix = fullRoot + Path.DirectorySeparatorChar;
+        if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"{what}越过工程目录：{relative}");
+        return full;
+    }
 }

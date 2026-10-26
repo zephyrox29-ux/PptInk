@@ -60,16 +60,14 @@ internal sealed class PageJumpPanel : StageElement
             Toast.Show("当前没有可用的页码信息（未放映或 COM 不可用）。");
             return;
         }
-        if (total == _total && _grid.Children.Count > 0)
-        {
-            if (ShowNearAnchor(anchor, Width, Math.Min(Height, 340)))
-                AutoDismissIn(8);
-            return;
-        }
         _total = total;
         _grid.Children.Clear();
-        int columns = total > 100 ? 10 : 8;
-        _grid.MaxWidth = columns * 40 + (columns - 1) * 4;
+        // 44px 视觉目标 + 4px 间距；列数与面板宽度同步计算，不能只算按钮宽度
+        // 而漏掉每个按钮的 margin（原实现 8 列时 352 > 348，WrapPanel 实际只能放 7 列）。
+        int columns = total > 100 ? 9 : 7;
+        const double cell = 48;
+        double panelW = Math.Min(456, columns * cell + 24);
+        _grid.MaxWidth = columns * cell;
         for (int n = 1; n <= total; n++)
         {
             var btn = new Button
@@ -80,14 +78,14 @@ internal sealed class PageJumpPanel : StageElement
                     FontSize = 12.5,
                     HorizontalAlignment = HorizontalAlignment.Center,
                 },
-                Width = 40, Height = 40,
+                Width = 44, Height = 44,
                 Margin = new Thickness(0, 0, 4, 4),
                 Cursor = Cursors.Hand,
                 Focusable = false,
                 Background = Brushes.Transparent,
                 BorderThickness = new Thickness(1),
             };
-            btn.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimaryBrush");
+            btn.SetResourceReference(Control.ForegroundProperty, "TextPrimaryBrush");
             btn.SetResourceReference(Border.BorderBrushProperty, "PanelBorderBrush");
             ToolbarFactory.PressWire(btn, () =>
             {
@@ -98,17 +96,21 @@ internal sealed class PageJumpPanel : StageElement
             _grid.Children.Add(btn);
         }
 
-        // 尺寸先量再弹：宽按网格自然宽（不含滚动条），高最多 340（约 7 行）
-        Width = double.NaN;
-        Height = double.NaN;
-        UpdateLayout();
-        double w = Math.Min(360, Math.Max(_grid.MaxWidth + 24, DesiredSize.Width));
-        double h = Math.Min(340, Math.Max(120, DesiredSize.Height));
-        Width = w;
+        // SizeToContent 的等价物：先以 Hidden 参与测量（Collapsed 不产生 DesiredSize），
+        // 再按实际内容算高；旧实现首次打开高度恒为 120，约两行就截断。
+        int rows = (total + columns - 1) / columns;
+        double h = Math.Min(340, Math.Max(120, rows * cell + 44));
+        Width = panelW;
         Height = h;
-        if (ShowNearAnchor(anchor, w, h))
+        Visibility = Visibility.Hidden;
+        Measure(new Size(panelW, double.PositiveInfinity));
+        UpdateLayout();
+        if (ShowNearAnchor(anchor, panelW, h))
             AutoDismissIn(8);
         else
+        {
+            Visibility = Visibility.Collapsed;
             Toast.Show("没有空位弹出页码面板，先关掉其他浮窗。");
+        }
     }
 }

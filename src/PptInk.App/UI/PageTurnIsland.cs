@@ -221,6 +221,13 @@ public sealed class PageTurnIsland : StageElement
     public override void HideAnimated()
     {
         if (Visibility != Visibility.Visible) return;
+        if (AppConfig.Current.ReduceMotion)
+        {
+            BeginAnimation(OpacityProperty, null);
+            Opacity = 1;
+            Visibility = Visibility.Collapsed;
+            return;
+        }
         var fade = new DoubleAnimation(1, 0, (Duration)Application.Current.FindResource("HideDuration"))
         { EasingFunction = (IEasingFunction)Application.Current.FindResource("EaseHide") };
         fade.Completed += (_, _) => Visibility = Visibility.Collapsed;

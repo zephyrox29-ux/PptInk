@@ -22,6 +22,7 @@ public static class PackageBuilder
         issues.AddRange(LuaSyntaxChecker.Check(project.LuaSource));
         var snapshot = new ProjectModel { Manifest = manifest, LuaSource = project.LuaSource, Resources = project.Resources };
         issues.AddRange(CrossConsistencyChecker.Check(snapshot));
+        issues.AddRange(ManifestValidator.ValidateContent(project.LuaSource, project.Resources));
 
         foreach (var res in project.Resources)
             if (PathSafety.IsUnsafeRelative(res.RelativePath))
@@ -76,7 +77,7 @@ public static class PackageBuilder
             Height = m.Panel.Height,
             Alpha = m.Panel.Alpha,
             ShowInIsland = m.Panel.ShowInIsland,
-            Elements = (m.Panel.Elements ?? Array.Empty<PanelElement>()).Select(e => new PanelElement
+            Elements = (m.Panel.Elements ?? Array.Empty<PanelElement>()).OfType<PanelElement>().Select(e => new PanelElement
             {
                 Type = e.Type,
                 Id = e.Id,

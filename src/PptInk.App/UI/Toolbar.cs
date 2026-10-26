@@ -89,6 +89,7 @@ public sealed partial class Toolbar : StageElement
     public Toolbar(AppServices svc)
     {
         _svc = svc;
+        _paletteSaveDebounce.Tick += (_, _) => FlushPaletteConfigSave();
 
         // 原 xaml 窗口级视觉属性（元素级等价物）
         UseLayoutRounding = true;

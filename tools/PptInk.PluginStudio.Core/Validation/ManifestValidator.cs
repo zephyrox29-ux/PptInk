@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using PptInk.PluginStudio.Core.Models;
 
@@ -16,6 +17,8 @@ public static class ManifestValidator
     public const double PanelAlphaMin = 0.3, PanelAlphaMax = 1.0;
     public const double SliderBound = 100_000;
     public const int ScriptMaxBytes = 256 * 1024;
+    public const int PackageMaxEntries = 128;
+    public const long PackageMaxBytes = 20L * 1024 * 1024;
 
     private static readonly Regex IdRegex = new(@"\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\z", RegexOptions.CultureInvariant);
     private static readonly Regex IdentifierRegex = new(@"\A[A-Za-z_][A-Za-z0-9_]{0,63}\z", RegexOptions.CultureInvariant);
@@ -146,6 +149,32 @@ public static class ManifestValidator
             }
         }
         return m;
+    }
+
+    /// <summary>工程内容限制：与主程序 InstallFromZip 的 256KB 脚本、128 条目、20MB
+    /// 实际解压字节保持一致，避免 Studio 校验全绿而主程序拒绝，或“一键安装成功、
+    /// 重启扫描时插件消失”。</summary>
+    public static IReadOnlyList<ValidationIssue> ValidateContent(string? luaSource, IReadOnlyList<ResourceFile>? resources)
+    {
+        var issues = new List<ValidationIssue>();
+        int scriptBytes = Encoding.UTF8.GetByteCount(luaSource ?? "");
+        if (scriptBytes > ScriptMaxBytes)
+            issues.Add(Err("lua", $"入口脚本 {scriptBytes} 字节，超过 256 KB 限制"));
+
+        var res = resources ?? Array.Empty<ResourceFile>();
+        if (res.Count + 2 > PackageMaxEntries)
+            issues.Add(Err("resources", $"包内文件数 {res.Count + 2}，超过 128 个限制"));
+        long total = scriptBytes;
+        foreach (var r in res)
+        {
+            if (r is null || PathSafety.IsUnsafeRelative(r.RelativePath))
+                issues.Add(Err("resources", $"资源路径非法：{r?.RelativePath ?? "空资源"}"));
+            else
+                total += r.Content?.LongLength ?? 0;
+        }
+        if (total > PackageMaxBytes)
+            issues.Add(Err("resources", $"包内实际内容 {total} 字节，超过 20 MB 限制"));
+        return issues;
     }
 
     private static bool InRange(double v, double min, double max) => double.IsFinite(v) && v >= min && v <= max;

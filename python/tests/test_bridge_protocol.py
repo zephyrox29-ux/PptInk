@@ -36,6 +36,23 @@ def test_handle_validates_untrusted_requests_and_stays_usable():
     assert ink_bridge.handle({"cmd": "shapes"})["ok"] is True
 
 
+def test_ping_and_warmup_report_health():
+    sys.path.insert(0, str(ROOT))
+    import ink_bridge
+
+    ping = ink_bridge.handle({"cmd": "ping"})
+    assert ping["ok"] is True
+    assert ping["server"] == "pptink-bridge"
+    assert isinstance(ping["pid"], int)
+    assert ping["numpy"] is True
+    assert ping["recognizer"] is True
+    assert "stats" in ping
+
+    warm = ink_bridge.handle({"cmd": "warmup"})
+    assert warm["ok"] is True
+    assert warm["warmed"] is True
+
+
 def test_stdio_protocol_is_one_json_response_per_input_line():
     lines = [
         "not-json",

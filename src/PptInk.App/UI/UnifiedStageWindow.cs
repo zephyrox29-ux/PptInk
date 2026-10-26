@@ -600,6 +600,12 @@ public sealed partial class UnifiedStageWindow : Window
         _guard = new WindowInputGuard(_source, GuardModeFor(!_active || _passthroughWanted),
             msg => _svc.Log.Info(msg));
         _source.AddHook(WndProc);
+        // 亮度键不是标准虚拟键，用 Raw Input 的 Consumer Control 兜底；舞台停用/关闭时
+        // 回调里的 enabled 会返回 false，不会在桌面/设置场景误翻页。
+        BrightnessHotkeyRouter.Register(_source.Handle,
+            forward => _svc.UiOrchestrator.AdvanceSlidePage(forward),
+            () => _active && _svc.Config.PresenterMediaKeyPageTurn && _svc.Config.PresenterForwardEnabled);
+        Closed += (_, _) => BrightnessHotkeyRouter.Unregister();
         // 竞态回补（v0.6.0 三项空跑修复）：预创建窗口首次 Show 后 Loaded 异步晚于
         // Activate 同步序列 —— _guard/_source 均 null 时穿透/置顶/日志空跑，此处补齐。
         if (_active)
@@ -612,6 +618,14 @@ public sealed partial class UnifiedStageWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        // 亮度键 Raw Input：只消费 HID Consumer Control 的 0x006F/0x0070。
+        const int WM_INPUT = 0x00FF;
+        if (msg == WM_INPUT && BrightnessHotkeyRouter.HandleRawInput(lParam))
+        {
+            handled = true;
+            return IntPtr.Zero;
+        }
+
         // —— 通道 A（v0.3.0 主力）：WndProc 原生 WM_POINTER，不依赖 WPF 触摸栈 ——
         // 消息不置 handled（WPF 未启用 pointer 模式时不消费；万一消费，StylusPlugIn
         // 通道被会话锁幂等挡住，无双发）。硬件环境全局启用 pointer 路由时零成本接管。

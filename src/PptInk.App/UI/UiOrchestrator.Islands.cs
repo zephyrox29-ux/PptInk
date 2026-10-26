@@ -21,11 +21,11 @@ public sealed partial class UiOrchestrator
         _toolbar.GeometryChanged += ScheduleChromeLayout;
         _toolbar.UndoRequested += () => _svc.InkEngine.Undo();
         _toolbar.RedoRequested += () => _svc.InkEngine.Redo();
-        _toolbar.ExitShowRequested += () => _svc.PptController.ExitShow();
+        _toolbar.ExitShowRequested += () => RequestExitShow();
         // v0.9.2：AI 按钮语义修正 —— 原「识别最近一笔」在实际课堂中没有价值（老师画完
         // 停顿即自动规整，再点一下等于重复触发）；现改为 AI Power 开关（开/关本地推理），
         // 与设置中心「AI 形状规整」同一状态源，两侧视觉实时同步。
-        _toolbar.ShapeAssistRequested += ToggleAiPower;
+        _toolbar.ShapeAssistRequested += OnToolbarAiPressed;
         // 长按手柄收纳（v0.2.0）：工具栏自身收缩为屏上胶囊球（可拖动、吸附边缘、
         // 点按展开）——绝不能收进托盘（放映中托盘被全屏放映盖住，用户无法恢复）。
         // 编排器只负责让位弹出物：贴边画笔小球收起、擦除浮岛/气泡退场。
@@ -62,9 +62,14 @@ public sealed partial class UiOrchestrator
         };
     }
 
-    private void AdvanceSlide(bool forward)
+    /// <summary>媒体键/Raw Input 亮度键的统一翻页入口（UI 线程调用，内部异步执行 COM）。</summary>
+    public void AdvanceSlidePage(bool forward) => _ = AdvanceSlide(forward);
+
+    private async Task AdvanceSlide(bool forward)
     {
-        bool viaCom = forward ? _svc.PptController.NextSlide() : _svc.PptController.PrevSlide();
+        // v1.1.2：COM 在 PptController 的专用 STA 上执行；UI 线程不再同步等待 PPT。
+        bool viaCom = await (forward ? _svc.PptController.NextSlideAsync() : _svc.PptController.PrevSlideAsync())
+            .ConfigureAwait(true);
         if (viaCom)
         {
             _svc.Log.Info($"翻页按钮（{(forward ? "下一页" : "上一页")}）：COM 成功");   // v1.1.1 取证日志
@@ -97,8 +102,8 @@ public sealed partial class UiOrchestrator
         if (_pageIslandR is null)
         {
             _pageIslandR = new PageTurnIsland(_svc, "R");
-            _pageIslandR.PrevRequested += () => AdvanceSlide(forward: false);
-            _pageIslandR.NextRequested += () => AdvanceSlide(forward: true);
+            _pageIslandR.PrevRequested += () => _ = AdvanceSlide(forward: false);
+            _pageIslandR.NextRequested += () => _ = AdvanceSlide(forward: true);
             _pageIslandR.PageBadgeRequested += anchor => ShowPageJump(anchor);
         }
         if (_overlay is not null && _pageIslandR.Stage is null)
@@ -107,8 +112,8 @@ public sealed partial class UiOrchestrator
         if (_pageIslandL is null)
         {
             _pageIslandL = new PageTurnIsland(_svc, "L");
-            _pageIslandL.PrevRequested += () => AdvanceSlide(forward: false);
-            _pageIslandL.NextRequested += () => AdvanceSlide(forward: true);
+            _pageIslandL.PrevRequested += () => _ = AdvanceSlide(forward: false);
+            _pageIslandL.NextRequested += () => _ = AdvanceSlide(forward: true);
             _pageIslandL.PageBadgeRequested += anchor => ShowPageJump(anchor);
         }
         if (_overlay is not null && _pageIslandL.Stage is null)
@@ -121,23 +126,25 @@ public sealed partial class UiOrchestrator
 
     // ———————— v1.1.2 页码快捷跳页 ————————
 
+    private async Task GotoPageAsync(int page)
+    {
+        bool ok = await _svc.PptController.GotoSlideAsync(page).ConfigureAwait(true);
+        if (ok)
+        {
+            _svc.Log.Info($"快捷跳页：第 {page} 页（COM）");
+            _ = PollPageBadgeAsync();
+        }
+        else
+        {
+            Toast.Show("跳页需要 PowerPoint/WPS 放映支持（兜底按键通道无法指定页码）。");
+        }
+    }
+
     private void EnsurePageJumpPanel()
     {
         if (_pageJump is not null) return;
         _pageJump = new PageJumpPanel(_svc);
-        _pageJump.PageRequested += page =>
-        {
-            bool ok = _svc.PptController.GotoSlide(page);
-            if (ok)
-            {
-                _svc.Log.Info($"快捷跳页：第 {page} 页（COM）");
-                _ = PollPageBadgeAsync();
-            }
-            else
-            {
-                Toast.Show("跳页需要 PowerPoint/WPS 放映支持（兜底按键通道无法指定页码）。");
-            }
-        };
+        _pageJump.PageRequested += page => _ = GotoPageAsync(page);
         _overlay?.AddToLayer(StageLayer.Ui, _pageJump, 0, 0);
     }
 
@@ -227,7 +234,7 @@ public sealed partial class UiOrchestrator
         {
             bool want = _svc.Config.PresenterForwardEnabled &&
                         _svc.StateMachine.Phase == AppPhase.S1Active;
-            if (want) PresenterForwarder.Install(AdvanceSlide);
+            if (want) PresenterForwarder.Install(f => _ = AdvanceSlide(f));
             else PresenterForwarder.UninstallAll();
         });
     }
@@ -235,7 +242,7 @@ public sealed partial class UiOrchestrator
     private void InstallPresenterForward()
     {
         if (_svc.Config.PresenterForwardEnabled)
-            PresenterForwarder.Install(AdvanceSlide);
+            PresenterForwarder.Install(f => _ = AdvanceSlide(f));
     }
 
     /// <summary>切换"严格手掌抑制"（托盘菜单，v0.3.1 语义更新：原「仅指尖书写」）：

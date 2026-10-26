@@ -20,6 +20,8 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     /// <summary>墨迹层期望激活态：单窗口架构（v0.9.0）下窗口恒常、切档不再重建，
     /// 此标志保留给 RefreshInputMode/相位切换判断「切档后是否维持书写就绪」。</summary>
     private bool _overlayWanted;
+    /// <summary>板书导出互斥（0 = 空闲）：池线程导出期间重复点击只提示，不排队复制渲染。</summary>
+    private int _exporting;
     /// <summary>墨迹层渲染事件已接线（只挂一次：handler 读 _overlay 字段而非
     /// 捕获窗口实例 —— 事件永远流向当前窗口实例）。</summary>
     private bool _overlayWired;
@@ -427,6 +429,12 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     /// <summary>工具栏缩放变更（设置中心调用）。</summary>
     public void RefreshToolbarScale() => _toolbar?.RefreshScale();
 
+    /// <summary>笔墨高级参数/荧光笔透明度变化：强制重合成当前页缓存，立即反映到已有板书。</summary>
+    public void RefreshInkAppearance()
+    {
+        _app.Dispatcher.Invoke(() => _overlay?.InvalidateInkComposition());
+    }
+
     /// <summary>影响底部槽位的设置项（手势区避让等）变更后立即重排一次（v1.1.1：
     /// 原先只写配置，工具栏/翻页岛要等下次显隐或几何变化才挪位，设置看似无效）。</summary>
     public void RefreshChromeLayout() => ScheduleChromeLayout();
@@ -462,6 +470,43 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         _pageIslandL?.SetIdleFade(cfg.ToolbarIdleFadeEnabled, cfg.ToolbarIdleFadeSeconds, cfg.ToolbarIdleOpacity);
     }
 
+    private bool _doubtReviewing;
+
+    /// <summary>下课后疑惑笔迹询问（Beta 可选）：只在放映结束且确有疑问时出现，不打断课堂。</summary>
+    private async Task ShowDoubtReviewAsync()
+    {
+        var cfg = _svc.Config;
+        if (!cfg.AdvancedCorrectionEnabled || !cfg.DoubtReviewEnabled || _doubtReviewing || _doubts.Count == 0)
+            return;
+        _doubtReviewing = true;
+        try
+        {
+            await Task.Delay(900).ConfigureAwait(true);   // 等下课收场动画结束
+            var items = TakeDoubts();
+            if (items.Count == 0) return;
+            var win = new DoubtReviewWindow(items);
+            win.ShowDialog();
+            foreach (var shape in win.RejectedShapes) ExcludeShapeFromAi(shape);
+            if (win.RejectedShapes.Count > 0)
+                Toast.Show($"已按你的反馈调整：今后不再自动规整 {win.RejectedShapes.Count} 类图形。");
+        }
+        catch (Exception ex) { AppLog.Instance.Warn($"疑惑笔迹询问失败：{ex.GetType().Name}: {ex.Message}"); }
+        finally { _doubtReviewing = false; }
+    }
+
+    /// <summary>用户否决的形状从白名单排除；空白名单先展开为全部已知形状。</summary>
+    private void ExcludeShapeFromAi(string shape)
+    {
+        var cfg = _svc.Config;
+        var all = new[] { "line", "arrow", "dashed", "dotted", "check", "cross", "triangle",
+                          "quad", "polygon", "circle", "ellipse", "wave", "heart", "star", "cloud" };
+        var set = ParseShapeWhitelist(cfg.AiShapeWhitelist);
+        if (set.Count == 0) foreach (var a in all) set.Add(a);
+        set.Remove(shape);
+        cfg.AiShapeWhitelist = set.Count == 0 || set.Count >= all.Length ? "" : string.Join(";", set);
+        cfg.Save();
+    }
+
     /// <summary>状态机相位 → UI 呈现。</summary>
     public void ApplyPhase(AppPhase phase)
     {
@@ -478,10 +523,33 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
                     // 「以为有自动备份，实际退出即清」的静默数据丢失。
                     if (_svc.PptController.TryGetPresentationIdentity(out var deckId))
                     {
+                        // 换课件会在 BeginPresentationSession 中清空旧页。自动导出关闭时
+                        // 必须先给用户一个明确的导出机会，不能清完再发“请提前导出”的提示。
+                        if (!_svc.Config.AutoExportOnExit &&
+                            _svc.InkEngine.HasInk &&
+                            !string.Equals(_svc.InkEngine.SessionIdentity, deckId, StringComparison.Ordinal))
+                        {
+                            var choice = MessageBox.Show(
+                                "检测到换了课件。旧板书的批注会被清空，是否先导出旧板书？\n\n" +
+                                "选「是」：先导出到桌面「PptInk导出」再切换；选「否」：直接清空。",
+                                "融绘 · 换课件", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                            if (choice == MessageBoxResult.Yes)
+                            {
+                                var dir = _svc.InkEngine.ExportSessionSafe();
+                                if (dir is not null) Toast.Show($"旧板书已导出：{dir}");
+                            }
+                        }
                         bool discardedInk = _svc.InkEngine.BeginPresentationSession(deckId);
                         if (discardedInk && !_svc.Config.AutoExportOnExit)
-                            Toast.Show("已切换课件：旧板书已清空（自动导出未开启，需要留存请在退出前用托盘「导出板书」）。");
+                            Toast.Show("已切换课件：旧板书已清空。");
                     }
+                    // 重要：放映开始/换课件/S2 恢复时，session.CurrentSlide 在 OnPresentationStart
+                    // 中已经被赋成起始页，ApplySlideIndex 不会再产生“页码变化”事件。若不在这里
+                    // 无条件对齐引擎页，引擎会停留在上一场/上次手动书写的页，板书写到不可见的
+                    // 旧页；页码轮询同样因为 session 已是当前页而无法纠正。必须显式同步一次。
+                    _svc.InkEngine.SwitchPage(_svc.StateMachine.Session?.CurrentSlide ?? 1);
+                    _lastBadgePage = -1;
+                    _lastBadgeTotal = -1;
                     // v1.1.1：首帧前同步刷新目标屏 —— 原先只有 500ms 页码轮询更新 ShowScreen，
                     // 首帧工具栏/浮岛按旧屏（常为主屏）出现，探测完成后整套 UI 再跳一次屏
                     //（「浮窗先出现在错误屏幕再乱跳」）。FindSlideShowWindow 纯 EnumWindows
@@ -520,6 +588,10 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
                     _pagePoll.Stop();
                     _watchdog.Stop();           // 全套 UI 已收回，看门狗无守卫对象
                     _wdStuckCount = 0;
+                    _lastBadgePage = -1;
+                    _lastBadgeTotal = -1;
+                    // v1.0.0Beta：下课（放映结束、UI 已收回）后询问“把握不大”的识别结果。
+                    _ = ShowDoubtReviewAsync();
                     // v1.1.1：退场显式复位主屏 —— ShowScreen 停留在上一块放映屏时，托盘
                     // 唤起的设置窗/Toast/HUD 会出现在可能已关闭的投影屏上（「设置像没打开」）。
                     ShowScreen.ResetToPrimary();
@@ -544,30 +616,62 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
             _overlay?.ActivateStage();
             _watchdog.Start();         // 手动唤起同样受看门狗保护（Z 序被抢自愈）；
                                         // 退映检测有 Session 非空门禁，未放映书写不受影响
-            if (_svc.StateMachine.Phase == AppPhase.S0Background)
-                _ = PollPageBadgeAsync();   // 手动唤起也校准一次页码（可能已有放映在进行）
+if (_svc.StateMachine.Phase == AppPhase.S0Background)
+                    {
+                        // 手动唤起没有放映页语义：从上一场残页回到第 1 页，避免“桌面书写”
+                        // 落在上一场最后一页的缓存里，随后新放映完全看不见。
+                        _svc.InkEngine.SwitchPage(1);
+                        _lastBadgePage = -1;
+                        _lastBadgeTotal = -1;
+                        _ = PollPageBadgeAsync();   // 手动唤起也校准一次页码（可能已有放映在进行）
+                    }
         });
+    }
+
+    /// <summary>工具栏“结束放映”：S1 交给 PPT；S0 手动唤起时没有放映可退，直接收回桌面 UI。</summary>
+    public void RequestExitShow()
+    {
+        if (_svc.StateMachine.Phase == AppPhase.S0Background && _svc.StateMachine.Session is null)
+        {
+            _app.Dispatcher.Invoke(() =>
+            {
+                HideChrome();
+                _overlayWanted = false;
+                _overlay?.DeactivateStage();
+                _watchdog.Stop();
+                _wdStuckCount = 0;
+            });
+            return;
+        }
+        _svc.PptController.ExitShow();
     }
 
     /// <summary>导出当前会话全部板书（PNG 逐页 + SVG 矢量 + JSON 点序列）到桌面「PptInk导出」。
     /// 功能补齐：导出此前仅在退出时自动触发，课堂中无法手动留存板书。</summary>
     public void ExportInk()
     {
-        try
+        // 4K 逐页 PNG 渲染是秒级 CPU 工作：放到池线程，舞台/书写完全不受影响。
+        // ExportSessionSafe 本身就是「持锁快照 + 锁外渲染」，线程安全。
+        if (Interlocked.Exchange(ref _exporting, 1) != 0)
         {
-            var dir = _svc.InkEngine.ExportSessionSafe();   // 持锁快照 + 锁外渲染（并发书写安全）
-            if (dir is null)
+            Toast.Show("正在导出，请稍候…");
+            return;
+        }
+        Toast.Show("正在导出板书（PNG / SVG / JSON）…");
+        _ = Task.Run(() =>
+        {
+            try
             {
-                Toast.Show("暂无板书可导出");
-                return;
+                var dir = _svc.InkEngine.ExportSessionSafe();
+                Toast.Show(dir is null ? "暂无板书可导出" : $"板书已导出：{dir}");
             }
-            Toast.Show($"板书已导出：{dir}");
-        }
-        catch (Exception ex)
-        {
-            _svc.Log.Error(ex, "导出板书失败");
-            Toast.Show("导出失败，详见日志");
-        }
+            catch (Exception ex)
+            {
+                _svc.Log.Error(ex, "导出板书失败");
+                Toast.Show("导出失败，详见日志");
+            }
+            finally { Interlocked.Exchange(ref _exporting, 0); }
+        });
     }
 
     /// <summary>打开设置中心（单例：已开则置前，绝不叠窗）。</summary>
@@ -600,6 +704,8 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         _toolbar?.HidePalette(immediate: true);
         if (_shapeBubble is { IsVisible: true })
             _shapeBubble.HideAnimated();
+        if (_pageJump is { IsVisible: true })
+            _pageJump.HideAnimated();
     }
 
     private void ShowChrome()

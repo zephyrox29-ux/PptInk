@@ -83,37 +83,63 @@ public sealed class PresenterForwarder : IDisposable
             VK_PRIOR or VK_LEFT => false,  // PageUp / ← ：上一页
             _ => null,
         };
+        // 翻页笔媒体键兼容：音量上/下、媒体上/下一曲。只在放映会话安装本钩子
+        // （S1），所以这里不需要再判断 session；默认开启，确认关闭后放行系统音量。
+        bool mediaKey = false;
+        if (forward is null && AppConfig.Current.PresenterMediaKeyPageTurn)
+        {
+            forward = k.VkCode switch
+            {
+                VK_VOLUME_UP or VK_MEDIA_NEXT_TRACK => true,
+                VK_VOLUME_DOWN or VK_MEDIA_PREV_TRACK => false,
+                _ => null,
+            };
+            mediaKey = forward is not null;
+        }
         if (forward is null)
             return CallNextHookEx(_hook, code, wParam, lParam);
 
-        // 核心判定：焦点是否在本进程（痛点场景）。在 PPT / 其他程序 → 完全放行。
-        IntPtr fg = GetForegroundWindow();
-        if (fg == IntPtr.Zero)
-            return CallNextHookEx(_hook, code, wParam, lParam);
-        _ = GetWindowThreadProcessId(fg, out uint fgPid);
-        if (fgPid != GetCurrentProcessId())
-            return CallNextHookEx(_hook, code, wParam, lParam);
-
-        // 焦点在本进程的控件而这些键有控件语义 → 放行。审查修复（v1.1.1 扩充）：
-        // TextBox 可编辑（←/→ 移插入点、PgUp/PgDn 翻表单）；Selector 系（ListBox/
-        // ComboBox）PgUp/PgDn 翻选项；Slider ←/→ 调值；DataGrid 导航。另：带
-        // Ctrl/Alt/Win 修饰的组合键（词跳、快捷键）不按翻页语义吞。
-        // LL 钩子回调在装钩线程（UI 线程泵消息时）同步执行，WPF 焦点查询线程安全。
-        var focused = System.Windows.Input.Keyboard.FocusedElement;
-        bool controlUsesKey = focused switch
+        // 编辑控件有自身语义（设置页输入框/滑杆）时不劫持媒体键，避免改不了音量。
+        var focusedBefore = System.Windows.Input.Keyboard.FocusedElement;
+        bool controlUsesKey = focusedBefore switch
         {
             System.Windows.Controls.TextBox { IsReadOnly: false } => true,
-            System.Windows.Controls.Primitives.Selector => true,   // ListBox/ComboBox/DataGrid（派生自 Selector）
+            System.Windows.Controls.Primitives.Selector => true,
             System.Windows.Controls.Slider => true,
             _ => false,
         };
         if (controlUsesKey)
             return CallNextHookEx(_hook, code, wParam, lParam);
-        if ((System.Windows.Input.Keyboard.Modifiers &
-             (System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Alt | System.Windows.Input.ModifierKeys.Windows)) != 0)
+
+        // 普通翻页键仍只在本进程前台时接管；媒体键是翻页笔兜底，允许 PPT 前台时全局接管。
+        IntPtr fg = GetForegroundWindow();
+        if (!mediaKey && fg != IntPtr.Zero)
+        {
+            _ = GetWindowThreadProcessId(fg, out uint fgPid);
+            if (fgPid != GetCurrentProcessId())
+                return CallNextHookEx(_hook, code, wParam, lParam);
+        }
+        if (fg == IntPtr.Zero && !mediaKey)
             return CallNextHookEx(_hook, code, wParam, lParam);
 
-        // 焦点在本进程非编辑控件 → 吞掉本键，异步转发翻页（回调内不做 COM/耗时操作，300ms 硬限制）
+        // 普通翻页键再排除编辑控件/组合键；媒体键已在上方处理。
+        if (!mediaKey)
+        {
+            var focused = System.Windows.Input.Keyboard.FocusedElement;
+            bool controlUsesKey2 = focused switch
+            {
+                System.Windows.Controls.TextBox { IsReadOnly: false } => true,
+                System.Windows.Controls.Primitives.Selector => true,
+                System.Windows.Controls.Slider => true,
+                _ => false,
+            };
+            if (controlUsesKey2)
+                return CallNextHookEx(_hook, code, wParam, lParam);
+            if ((System.Windows.Input.Keyboard.Modifiers &
+                 (System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Alt | System.Windows.Input.ModifierKeys.Windows)) != 0)
+                return CallNextHookEx(_hook, code, wParam, lParam);
+        }
+
         bool fwd = forward.Value;
         _dispatcher.BeginInvoke(() => _advance(fwd), DispatcherPriority.Input);
         return (IntPtr)1;
@@ -130,6 +156,10 @@ public sealed class PresenterForwarder : IDisposable
     private const uint VK_NEXT = 0x22;   // PageDown
     private const uint VK_LEFT = 0x25;
     private const uint VK_RIGHT = 0x27;
+    private const uint VK_VOLUME_DOWN = 0xAE;
+    private const uint VK_VOLUME_UP = 0xAF;
+    private const uint VK_MEDIA_NEXT_TRACK = 0xB0;
+    private const uint VK_MEDIA_PREV_TRACK = 0xB1;
 
     private delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
 

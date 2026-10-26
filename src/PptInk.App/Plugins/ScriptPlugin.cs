@@ -273,7 +273,7 @@ internal sealed class HostApiBridge : IPluginHostApi
 
     public void RequestEraseBehavior(string mode) => _ink.Tool = mode switch
     {
-        "stroke" => InkTool.EraseStroke,
+        "stroke" or "pixel" => InkTool.EraseStroke,   // pixel 是 EraseMode 的细分，不是独立工具
         "region" or "lasso" => InkTool.EraseLasso,
         "clear" => InkTool.EraseClearSwipe,   // 插件可直接请求"滑动清空"手势模式（一挥清页、可撤销）
         _ => _ink.Tool,
@@ -370,9 +370,7 @@ internal sealed class HostApiBridge : IPluginHostApi
 
     public void CaptureScreen(string savePath)
     {
-        // The file capability grants screenshot export, not arbitrary file overwrite. Keep
-        // all plugin output inside its own LocalAppData sandbox even if a script supplies an
-        // absolute path or a traversal sequence.
+        // 文件能力仍限制在插件专属目录；截图/PNG 编码放后台，避免 4K 下冻结舞台。
         try
         {
             var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -384,7 +382,20 @@ internal sealed class HostApiBridge : IPluginHostApi
             var fullPath = Path.GetFullPath(Path.Combine(root, name));
             var prefix = Path.GetFullPath(root) + Path.DirectorySeparatorChar;
             if (!fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return;
-            ScreenCapture.CaptureActiveShow(fullPath);
+            ShowToast("正在截图…");
+            Task.Run(() =>
+            {
+                try
+                {
+                    ScreenCapture.CaptureActiveShow(fullPath);
+                    ShowToast($"截图已保存：{Path.GetFileName(fullPath)}");
+                }
+                catch (Exception ex)
+                {
+                    Core.AppLog.Instance.Warn($"插件 {_manifest.Id} 截图失败：{ex.Message}");
+                    ShowToast("截图保存失败");
+                }
+            });
         }
         catch (Exception ex) { Core.AppLog.Instance.Warn($"插件 {_manifest.Id} 截图失败：{ex.Message}"); }
     }

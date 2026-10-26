@@ -394,6 +394,15 @@ public sealed partial class Toolbar
 
     public void ShowAnimated(bool fromBottomEdge)
     {
+        if (AppConfig.Current.ReduceMotion)
+        {
+            BeginAnimation(OpacityProperty, null);
+            Opacity = 1;
+            _slide.BeginAnimation(TranslateTransform.YProperty, null);
+            _slide.Y = 0;
+            Visibility = Visibility.Visible;
+            return;
+        }
         if (Visibility != Visibility.Visible)
         {
             Opacity = 0;
@@ -408,6 +417,13 @@ public sealed partial class Toolbar
 
     public override void HideAnimated()
     {
+        if (AppConfig.Current.ReduceMotion)
+        {
+            BeginAnimation(OpacityProperty, null);
+            Opacity = 1;
+            Visibility = Visibility.Collapsed;
+            return;
+        }
         var fade = new DoubleAnimation(1, 0, (Duration)Application.Current.FindResource("HideDuration")) { EasingFunction = (IEasingFunction)Application.Current.FindResource("EaseHide") };
         fade.Completed += (_, _) => Visibility = Visibility.Collapsed;
         BeginAnimation(OpacityProperty, fade);

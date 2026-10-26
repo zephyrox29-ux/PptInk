@@ -40,7 +40,7 @@ public static class ToolbarCatalog
         new("erase",       "擦除",     "IconEraser",      "涂抹 / 圈画 / 滑动清空（点按后浮岛选择）",        ToolbarGroup.Tools),
         new("undo",        "撤销",     "IconUndo",        "撤销上一步",                                    ToolbarGroup.Ops),
         new("redo",        "重做",     "IconRedo",        "恢复撤销",                                    ToolbarGroup.Ops),
-        new("ai",          "AI 规整",  "IconAi",          "AI 增强开关：开启后落笔停顿自动规整手绘图形",     ToolbarGroup.Ops),
+        new("ai",          "AI 规整",  "IconAi",          "AI 规整：自动模式下开关；仅手动模式下每次点按识别最近一笔",     ToolbarGroup.Ops),
         new("plugin",      "插件",     "IconPlugin",      "计时器 / 聚光灯 / 截图等",                       ToolbarGroup.Ops),
         new("nav",         "翻页岛",   "IconNext",        "屏幕左右下角各一份固定翻页岛，直接触摸翻页",  ToolbarGroup.Nav),
     };

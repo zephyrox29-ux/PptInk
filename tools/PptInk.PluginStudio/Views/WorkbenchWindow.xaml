@@ -19,6 +19,7 @@
                     <Button Content="打开工程" Style="{StaticResource GhostButton}" Click="Open_Click"/>
                     <Button Content="保存工程" Style="{StaticResource GhostButton}" Click="Save_Click"/>
                     <Button Content="导入插件包" Style="{StaticResource GhostButton}" Click="Import_Click"/>
+                    <Button Content="导入目录" Style="{StaticResource GhostButton}" Click="ImportDirectory_Click"/>
                     <Button Content="示例库" Style="{StaticResource GhostButton}" Click="Templates_Click"/>
                     <Button Content="校验" Style="{StaticResource GhostButton}" Click="Validate_Click"/>
                     <Button Content="刷新预览" Style="{StaticResource GhostButton}" Click="Preview_Click"/>

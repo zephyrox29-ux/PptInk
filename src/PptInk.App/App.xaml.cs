@@ -46,7 +46,7 @@ public partial class App : Application
 
         try
         {
-            _services = AppServices.Compose(this);
+            _services = AppServices.Compose(this, _portable);
             var svc = _services;
 
             // 0) 外观令牌先行：任何窗口创建之前写入 Application 资源
@@ -80,7 +80,7 @@ public partial class App : Application
             svc.StateMachine.PhaseChanged += (_, phase) => Dispatcher.BeginInvoke(() => svc.UiOrchestrator.ApplyPhase(phase));
 
             // 5) 托盘（可选隐藏）
-            svc.Tray.Initialize(hideByDefault: _silentStart && AppConfig.Current.HideTrayIcon);
+            svc.Tray.Initialize(hideByDefault: AppConfig.Current.HideTrayIcon);
 
             // 6) 启动检测（COM 主通道 + WinEvent 兜底，零轮询）
             svc.Detector.Start();

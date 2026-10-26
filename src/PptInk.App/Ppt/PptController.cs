@@ -1,24 +1,97 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows.Threading;
 using PptInk.Core;
 
 namespace PptInk.Ppt;
 
 /// <summary>
-/// PPT 放映控制：翻页栏的上一页/下一页/退出放映。
+/// PPT 放映控制：翻页栏的上一页/下一页/跳页/退出放映。
 /// 优先 COM（精确、无焦点副作用）；COM 不可用（兜底模式下）直接向放映窗口
 /// PostMessage 键消息，不抢焦点（我们的墨迹层 WS_EX_NOACTIVATE，绝不能打断书写）。
+///
+/// v1.1.2 线程纪律：COM RCW 必须在其创建的 STA 上使用；此前 UI 线程同步调
+/// view.Next()/ActivePresentation.FullName，PPT 假死时整个舞台冻结，看门狗也无法运行。
+/// 现在本类自带专用 STA 消息泵，公开同步方法都带超时，UI 侧翻页/退出改用异步入口。
 /// </summary>
 public sealed class PptController : IDisposable
 {
+    private readonly Thread _comThread;
+    private readonly ManualResetEventSlim _ready = new(false);
+    private Dispatcher? _dispatcher;
     private dynamic? _cachedApp;
+    private volatile bool _disposed;
 
     private const uint WM_KEYDOWN = 0x0100;
     private const uint WM_KEYUP = 0x0101;
     private const short VK_RIGHT = 0x27, VK_LEFT = 0x25, VK_ESCAPE = 0x1B, VK_NEXT = 0x22, VK_PRIOR = 0x21;
+    private const int DefaultComTimeoutMs = 1200;
+
+    public PptController()
+    {
+        _comThread = new Thread(ComThreadLoop) { IsBackground = true, Name = "PptInk.PptController" };
+        _comThread.SetApartmentState(ApartmentState.STA);
+        _comThread.Start();
+    }
+
+    private void ComThreadLoop()
+    {
+        _dispatcher = Dispatcher.CurrentDispatcher;
+        _ready.Set();
+        try { Dispatcher.Run(); }
+        catch (Exception ex) { AppLog.Instance.Error(ex, "PowerPoint 控制消息泵异常退出"); }
+    }
+
+    /// <summary>在专用 STA 上同步执行 COM 工作；超时/异常返回 fallback，绝不阻塞 UI 超过 timeout。</summary>
+    private T InvokeCom<T>(Func<T> work, T fallback, int timeoutMs = DefaultComTimeoutMs)
+    {
+        if (_disposed || !_ready.Wait(2000) || _dispatcher is null) return fallback;
+        try
+        {
+            var op = _dispatcher.InvokeAsync(work, DispatcherPriority.Normal);
+            if (!op.Task.Wait(timeoutMs))
+            {
+                AppLog.Instance.Warn($"COM 调用超时（>{timeoutMs}ms），本次按不可用处理");
+                return fallback;
+            }
+            return op.Task.Result;
+        }
+        catch (Exception ex)
+        {
+            _cachedApp = null;
+            AppLog.Instance.Warn($"COM 调用失败：{ex.GetType().Name}: {ex.Message}");
+            return fallback;
+        }
+    }
+
+    /// <summary>异步 COM 入口（UI 线程使用）：调用超时只影响本次结果，不冻结界面。</summary>
+    private async Task<T> InvokeComAsync<T>(Func<T> work, T fallback, int timeoutMs = 5000)
+    {
+        if (_disposed || !_ready.Wait(2000) || _dispatcher is null) return fallback;
+        try
+        {
+            var op = _dispatcher.InvokeAsync(work, DispatcherPriority.Normal);
+            if (await Task.WhenAny(op.Task, Task.Delay(timeoutMs)).ConfigureAwait(false) != op.Task)
+            {
+                AppLog.Instance.Warn($"异步 COM 调用超时（>{timeoutMs}ms），本次按不可用处理");
+                return fallback;
+            }
+            return await op.Task.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _cachedApp = null;
+            AppLog.Instance.Warn($"异步 COM 调用失败：{ex.GetType().Name}: {ex.Message}");
+            return fallback;
+        }
+    }
 
     /// <summary>下一页。返回是否经 COM 完成（false = 走了键消息兜底，需上层推算页码）。</summary>
-    public bool NextSlide()
+    public bool NextSlide() => InvokeCom(NextSlideCore, false, 2500);
+
+    public Task<bool> NextSlideAsync() => InvokeComAsync(NextSlideCore, false);
+
+    private bool NextSlideCore()
     {
         try
         {
@@ -28,13 +101,17 @@ public sealed class PptController : IDisposable
                 return true;
             }
         }
-        catch { _cachedApp = null; }   // v0.8.1：RCW 失效即弃缓存（PPT 关闭重开后下次调用重绑）
+        catch { _cachedApp = null; }
         PostShowKey(VK_NEXT);
         return false;
     }
 
     /// <summary>上一页。</summary>
-    public bool PrevSlide()
+    public bool PrevSlide() => InvokeCom(PrevSlideCore, false, 2500);
+
+    public Task<bool> PrevSlideAsync() => InvokeComAsync(PrevSlideCore, false);
+
+    private bool PrevSlideCore()
     {
         try
         {
@@ -54,6 +131,17 @@ public sealed class PptController : IDisposable
     public bool GotoSlide(int slideNumber)
     {
         if (slideNumber <= 0) return false;
+        return InvokeCom(() => GotoSlideCore(slideNumber), false);
+    }
+
+    public Task<bool> GotoSlideAsync(int slideNumber)
+    {
+        if (slideNumber <= 0) return Task.FromResult(false);
+        return InvokeComAsync(() => GotoSlideCore(slideNumber), false);
+    }
+
+    private bool GotoSlideCore(int slideNumber)
+    {
         try
         {
             if (TryGetSlideShowView(out var view))
@@ -62,82 +150,92 @@ public sealed class PptController : IDisposable
                 return true;
             }
         }
-        catch { _cachedApp = null; }   // RCW 失效即弃缓存（与翻页同策）
+        catch { _cachedApp = null; }
         return false;
     }
 
-    /// <summary>退出放映（工具栏"停止播放"）。
-    /// v0.1.5 强化：view.Exit()「返回成功」≠ 放映真的结束（个别版本/放映状态静默吞掉）——
-    /// 300ms 后复核，仍存活则向放映窗口追加 ESC；UI 滞留由编排器看门狗最终兜底回收。</summary>
-    public void ExitShow()
-    {
-        bool viaCom = false;
-        try
-        {
-            if (TryGetSlideShowView(out var view))
-            {
-                view.Exit();
-                viaCom = true;
-                AppLog.Instance.Info("退出放映：COM view.Exit()");
-            }
-        }
-        catch (System.Exception ex) { _cachedApp = null; AppLog.Instance.Warn($"退出放映 COM 失败：{ex.Message}"); }
+    /// <summary>退出放映（工具栏"停止播放"）。v1.1.2：COM 在 STA 上执行，UI 不冻结。</summary>
+    public void ExitShow() => _ = ExitShowAsync();
 
+    public async Task ExitShowAsync()
+    {
+        bool viaCom = await InvokeComAsync(ExitShowCore, false, 2500).ConfigureAwait(false);
         if (!viaCom)
         {
             AppLog.Instance.Warn("退出放映：COM 不可用，PostMessage ESC 兜底");
             PostShowKey(VK_ESCAPE);
             return;
         }
-        // Exit() 成功路径复核（假定目标不可信）：静默失败时向放映窗口追发 ESC
-        _ = Task.Run(async () =>
+        // Exit() 返回成功不等于放映真的结束：300ms 后复核，仍存活则补 ESC。
+        await Task.Delay(300).ConfigureAwait(false);
+        if (HasActiveShow() && FindSlideShowWindow() is { } h)
         {
-            try
+            AppLog.Instance.Warn("退出放映复核：放映仍存活，PostMessage ESC 追击");
+            PostEscToWindow(h);
+        }
+    }
+
+    private bool ExitShowCore()
+    {
+        try
+        {
+            if (TryGetSlideShowView(out var view))
             {
-                await Task.Delay(300);
-                if (HasActiveShow() && FindSlideShowWindow() is { } h)
-                {
-                    AppLog.Instance.Warn("退出放映复核：放映仍存活，PostMessage ESC 追击");
-                    PostEscToWindow(h);
-                }
+                view.Exit();
+                AppLog.Instance.Info("退出放映：COM view.Exit()");
+                return true;
             }
-            catch { }
-        });
+        }
+        catch (Exception ex) { _cachedApp = null; AppLog.Instance.Warn($"退出放映 COM 失败：{ex.Message}"); }
+        return false;
     }
 
     /// <summary>COM 通道读取精确页码：SlideShowWindow.View.CurrentShowPosition。</summary>
     public bool TryGetSlidePosition(out int position)
     {
-        position = -1;
+        int p = InvokeCom(GetSlidePositionCore, -1);
+        position = p;
+        return p > 0;
+    }
+
+    private int GetSlidePositionCore()
+    {
         try
         {
             if (TryGetSlideShowView(out var view))
             {
-                position = (int)view.CurrentShowPosition;
-                return position > 0;
+                int p = (int)view.CurrentShowPosition;
+                return p > 0 ? p : -1;
             }
         }
         catch { _cachedApp = null; }
-        return false;
+        return -1;
     }
 
     /// <summary>COM 通道读取总页数：ActivePresentation.Slides.Count（页码徽标 "3 / 18" 右侧）。</summary>
     public bool TryGetTotalSlides(out int total)
     {
-        total = -1;
+        int t = InvokeCom(GetTotalSlidesCore, -1);
+        total = t;
+        return t > 0;
+    }
+
+    private int GetTotalSlidesCore()
+    {
         try
         {
             var app = GetApp();
-            if (app is null) return false;
-            total = (int)app.ActivePresentation.Slides.Count;
-            return total > 0;
+            if (app is null) return -1;
+            int t = (int)app.ActivePresentation.Slides.Count;
+            return t > 0 ? t : -1;
         }
-        catch { _cachedApp = null; return false; }
+        catch { _cachedApp = null; return -1; }
     }
 
-    /// <summary>放映是否仍在进行（COM 口径）：SlideShowWindows.Count &gt; 0。
-    /// 供看门狗存活判定（与窗口枚举双口径互为兜底）。</summary>
-    public bool HasActiveShow()
+    /// <summary>放映是否仍在进行（COM 口径）。供看门狗存活判定（与窗口枚举双口径互为兜底）。</summary>
+    public bool HasActiveShow() => InvokeCom(HasActiveShowCore, false);
+
+    private bool HasActiveShowCore()
     {
         try
         {
@@ -147,22 +245,23 @@ public sealed class PptController : IDisposable
         catch { _cachedApp = null; return false; }
     }
 
-    /// <summary>取当前演示文稿身份（ActivePresentation.FullName）：换课件检测用
-    /// （InkEngine.BeginPresentationSession）。失败返回 false —— 兜底通道检测下身份未知，
-    /// 调用方保持既有行为（不重置墨迹），绝不误清板书。</summary>
+    /// <summary>取当前演示文稿身份（ActivePresentation.FullName）：换课件检测用。</summary>
     public bool TryGetPresentationIdentity(out string identity)
     {
-        identity = "";
+        string id = InvokeCom(GetPresentationIdentityCore, "");
+        identity = id;
+        return !string.IsNullOrWhiteSpace(id);
+    }
+
+    private string GetPresentationIdentityCore()
+    {
         try
         {
             var app = GetApp();
-            if (app is null) return false;
-            var name = (string)app.ActivePresentation.FullName;
-            if (string.IsNullOrWhiteSpace(name)) return false;
-            identity = name;
-            return true;
+            if (app is null) return "";
+            return (string?)app.ActivePresentation.FullName ?? "";
         }
-        catch { _cachedApp = null; return false; }
+        catch { _cachedApp = null; return ""; }
     }
 
     /// <summary>向指定放映窗口投递 ESC（COM view.Exit() 在个别版本/放映状态下不生效时的强力兜底）。</summary>
@@ -173,11 +272,7 @@ public sealed class PptController : IDisposable
         PostMessage(hwnd, WM_KEYUP, VK_ESCAPE, IntPtr.Zero);
     }
 
-    /// <summary>窗口是否响应消息（挂起探测）：SendMessageTimeout(WM_NULL, 800ms)。
-    /// v0.2.0：PowerPoint 退出放映时进程假死（窗口在但完全不响应）是用户
-    /// 「黑屏、任务栏不见、PPT 全无响应、只能 CTRL+ALT+DEL」实测案例的根因 ——
-    /// 此状态放映窗口类仍存在、COM 也可能存活，传统判活口径永远不回收，
-    /// 必须用消息响应性探测识别。看门狗据此判死并收回全套批注 UI。</summary>
+    /// <summary>窗口是否响应消息（挂起探测）：SendMessageTimeout(WM_NULL, 800ms)。</summary>
     public static bool IsWindowResponsive(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero) return false;
@@ -202,9 +297,10 @@ public sealed class PptController : IDisposable
             view = app.SlideShowWindows[1].View;
             return true;
         }
-        catch { _cachedApp = null; return false; }   // v0.8.1：缓存的 RCW 失联（PPT 已退出）→ 弃缓存重绑
+        catch { _cachedApp = null; return false; }
     }
 
+    /// <summary>仅允许在专用 STA 线程调用。</summary>
     private dynamic? GetApp()
     {
         if (_cachedApp is not null) return _cachedApp;
@@ -220,9 +316,7 @@ public sealed class PptController : IDisposable
         return null;
     }
 
-    /// <summary>向放映窗口投递键消息（兜底翻页）。放映窗口已丢失时直接不动作：
-    /// v1.1.0 修复 —— 原先回退发给前台任意窗口，退映回收的窗口期里按「下一页」会把
-    /// PageDown 发给浏览器/资源管理器、ESC 可能关掉别人的对话框（输入副作用越界）。</summary>
+    /// <summary>向放映窗口投递键消息（兜底翻页）。放映窗口丢失时不动作，避免把键发给前台错误窗口。</summary>
     private static void PostShowKey(short vk)
     {
         IntPtr hwnd = FindSlideShowWindow() ?? IntPtr.Zero;
@@ -231,20 +325,25 @@ public sealed class PptController : IDisposable
         PostMessage(hwnd, WM_KEYUP, (nint)vk, IntPtr.Zero);
     }
 
-    /// <summary>取放映窗口 HWND：优先 COM（SlideShowWindow.HWND，精确），失败回退窗口类名枚举。
-    /// 供 ShowScreen 放映屏定位（后台线程调用安全：COM 经 marshaling，枚举纯 GDI 查询）。</summary>
+    /// <summary>取放映窗口 HWND：优先 COM（SlideShowWindow.HWND，精确），失败回退窗口类名枚举。</summary>
     public IntPtr TryGetShowHwnd()
+    {
+        IntPtr h = InvokeCom(TryGetShowHwndCore, IntPtr.Zero);
+        return h != IntPtr.Zero ? h : FindSlideShowWindow() ?? IntPtr.Zero;
+    }
+
+    private IntPtr TryGetShowHwndCore()
     {
         try
         {
             if (TryGetSlideShowView(out var view))
             {
-                int hwnd = (int)view.Parent.HWND;   // SlideShowWindow.HWND
+                int hwnd = (int)view.Parent.HWND;
                 if (hwnd != 0) return new IntPtr(hwnd);
             }
         }
         catch { _cachedApp = null; }
-        return FindSlideShowWindow() ?? IntPtr.Zero;
+        return IntPtr.Zero;
     }
 
     /// <summary>枚举放映窗口（PPT screenClass / WPS 双类名）。公开供 ShowScreen 兜底。</summary>
@@ -268,9 +367,25 @@ public sealed class PptController : IDisposable
 
     public void Dispose()
     {
-        if (_cachedApp is not null && Marshal.IsComObject(_cachedApp))
-            Marshal.ReleaseComObject(_cachedApp);
-        _cachedApp = null;
+        if (_disposed) return;
+        _disposed = true;
+        var dispatcher = _dispatcher;
+        if (dispatcher is not null)
+        {
+            try
+            {
+                dispatcher.Invoke(new Action(() =>
+                {
+                    if (_cachedApp is not null && Marshal.IsComObject(_cachedApp))
+                        Marshal.ReleaseComObject(_cachedApp);
+                    _cachedApp = null;
+                }), DispatcherPriority.Send, System.Threading.CancellationToken.None, TimeSpan.FromSeconds(1));
+            }
+            catch { }
+            try { dispatcher.BeginInvokeShutdown(DispatcherPriority.Send); } catch { }
+        }
+        _ready.Dispose();
+        _comThread.Join(1500);
     }
 
     #region P/Invoke
@@ -302,9 +417,6 @@ public sealed class PptController : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hwnd);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
     private static extern bool PostMessage(IntPtr hwnd, uint msg, nint wParam, IntPtr lParam);

@@ -19,17 +19,35 @@ public sealed class PythonBridge : IDisposable
 {
     private const string BridgeId = "pptink-bridge-v1";
 
+    /// <summary>单次请求最多发送的点数。超长笔画（4096+ 点）整段序列化 / 传输 / 解析会明显
+    /// 抬高首笔延迟，而识别引擎自身会按 4px 重采样 —— 等距抽稀到该上限不损失几何特征，
+    /// 只把 IPC 成本压回毫秒级。</summary>
+    private const int MaxSentPoints = 1200;
+
     private Process? _process;
     private StreamWriter? _stdin;
     private StreamReader? _stdout;
     private int _restartsThisMinute;
     private DateTime _minuteMark = DateTime.UtcNow;
+    /// <summary>首次拉起不占崩溃限流额度（冷启动失败不等于崩溃风暴）。</summary>
+    private bool _startedOnce;
     private volatile bool _disposed;
     private readonly object _gate = new();
     /// <summary>读写串行闸：并发识别请求排队，JSON 行不交错。</summary>
     private readonly SemaphoreSlim _ioGate = new(1, 1);
 
+    /// <summary>最近一次"桥不可用"的可读原因（UI 直接展示，替代笼统的“未就绪”）。
+    /// 成功握手后清空。</summary>
+    public string? LastUnavailableReason { get; private set; }
+
     public bool IsRunning => _process is { HasExited: false } && _stdin is not null && _stdout is not null;
+
+    /// <summary>依赖缺失（NumPy / 识别模块）专用异常：这类失败不计入崩溃限流，
+    /// 否则用户装好依赖后还被“暂停拉起”卡一分钟。</summary>
+    private sealed class BridgeUnavailableException : Exception
+    {
+        public BridgeUnavailableException(string message) : base(message) { }
+    }
 
     /// <summary>Python 桥根目录：按候选路径顺序探测 ink_bridge.py 实际位置。
     /// v0.9.7 修复：原先只查 &lt;exe&gt;\bridge\ 单一路径，便携包缺 bridge 目录时静默回退
@@ -75,7 +93,13 @@ public sealed class PythonBridge : IDisposable
             {
                 if (_disposed || !Core.AppConfig.Current.AiEnabled || IsRunning) return;
                 try { RestartProcess(); }
-                catch (Exception ex) { Core.AppLog.Instance.Error(ex, "AI 桥拉起失败（限流或启动超时）"); }
+                catch (Exception ex)
+                {
+                    LastUnavailableReason = ex is BridgeUnavailableException or FileNotFoundException or TimeoutException
+                        ? ex.Message
+                        : $"AI 桥拉起失败：{ex.Message}";
+                    Core.AppLog.Instance.Error(ex, "AI 桥拉起失败（限流或启动超时）");
+                }
             }
         });
     }
@@ -83,9 +107,10 @@ public sealed class PythonBridge : IDisposable
     private void RestartProcess()
     {
         if (_disposed) throw new ObjectDisposedException(nameof(PythonBridge));
-        // 限流：一分钟内最多 3 次（桥崩溃风暴保护）
+        // 限流：一分钟内最多 3 次（桥崩溃风暴保护）。首次拉起不计数。
         if (DateTime.UtcNow - _minuteMark > TimeSpan.FromMinutes(1)) { _restartsThisMinute = 0; _minuteMark = DateTime.UtcNow; }
-        if (++_restartsThisMinute > 3) throw new InvalidOperationException("Python 推理进程反复崩溃，已暂停拉起");
+        if (_startedOnce && ++_restartsThisMinute > 3) throw new InvalidOperationException("Python 推理进程反复崩溃，已暂停拉起（1 分钟内最多重试 3 次；请先运行「快速检测 AI 功能」）");
+        _startedOnce = true;
 
         Cleanup();
 
@@ -126,30 +151,40 @@ public sealed class PythonBridge : IDisposable
             _process.BeginErrorReadLine();
 
             // 握手：子进程就绪即回 ok（numpy import 可能耗时数秒 → 带超时，避免无限等待）
-            // v0.9.7：15s → 25s。嵌入式 Python 冷启动 + NumPy import 在低配大屏上实测
+            // v0.9.7：15s → 35s。嵌入式 Python 冷启动 + NumPy import 在低配大屏上实测
             // 可达 18~22s（尤其首次运行、杀毒软件扫描时），原 15s 超时把正常环境误判为
             // "握手超时"，这是用户反馈"AI bridge 未检测到"的最常见根因。
-            _stdin.WriteLine(JsonSerializer.Serialize(new { cmd = "hello", client = BridgeId }));
-            var readTask = _stdout.ReadLineAsync();
-            WaitHandshakeOrDispose(readTask);
-            var hello = readTask.Result;
+            _stdin.WriteLine(JsonSerializer.Serialize(new { cmd = "hello", client = BridgeId, version = 3 }));
+            var hello = ReadLineOrDispose("AI 桥握手", 35_000);
+            if (hello is null)
+                throw new IOException("AI 桥握手无响应");
+
             // v1.1.1：结构化校验取代 Contains("ok") —— 子进程向 stdout 打印的任何含 "ok"
             // 的告警/告错文本（如 "broken pipe" 之类）都会被旧判据当成握手成功。
+            // v1.1.2：同时读取依赖可用性，把"缺 NumPy"从"桥返回空"里区分出来。
             bool handshakeOk = false;
+            string? dependencyProblem = null;
             try
             {
-                if (hello is not null)
-                {
-                    var doc = JsonSerializer.Deserialize<JsonElement>(hello);
-                    handshakeOk = doc.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True;
-                }
+                using var doc = JsonDocument.Parse(hello);
+                var root = doc.RootElement;
+                handshakeOk = root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True;
+                if (handshakeOk)
+                    dependencyProblem = DescribeDependencyProblem(root);
             }
             catch (JsonException) { handshakeOk = false; }
             if (!handshakeOk)
                 throw new IOException("AI 桥握手协议异常");
+            if (dependencyProblem is not null)
+                throw new BridgeUnavailableException(dependencyProblem);
+
+            LastUnavailableReason = null;
+            WarmUp();
         }
-        catch
+        catch (Exception ex)
         {
+            // 依赖缺失是可修复的环境问题，不该让用户装完 NumPy 还被崩溃限流挡在门外。
+            if (ex is BridgeUnavailableException) _restartsThisMinute = Math.Max(0, _restartsThisMinute - 1);
             // Startup failures (including a timed-out handshake) must not leave an apparently
             // running but unusable child that blocks all future retry attempts.
             Cleanup();
@@ -157,19 +192,51 @@ public sealed class PythonBridge : IDisposable
         }
     }
 
-    /// <summary>等待握手响应（最长 25s），随时可被 Dispose 置位的 _disposed 打断。
+    /// <summary>把桥握手里的依赖可用性翻译成可执行的中文指引。</summary>
+    private static string? DescribeDependencyProblem(JsonElement hello)
+    {
+        bool numpyOk = !hello.TryGetProperty("numpy", out var numpyEl) || numpyEl.ValueKind != JsonValueKind.False;
+        bool recognizerOk = !hello.TryGetProperty("recognizer", out var recEl) || recEl.ValueKind != JsonValueKind.False;
+        if (numpyOk && recognizerOk) return null;
+        string detail = hello.TryGetProperty("numpy_error", out var ne) && ne.ValueKind == JsonValueKind.String
+            ? ne.GetString() ?? "" : "";
+        if (!numpyOk)
+            return "AI 桥缺少 NumPy：当前 Python 环境没有安装 numpy。请到 设置 → AI 功能 → 快速检测 AI 功能，让工具自动补齐依赖。"
+                 + (string.IsNullOrWhiteSpace(detail) ? "" : $"（{detail}）");
+        return "AI 桥的识别模块加载失败（pptink_recog 无法导入）。请在 设置 → AI 功能 → 快速检测 AI 功能 中一键修复。";
+    }
+
+    /// <summary>预热：让 NumPy 的首次调用开销在课堂开始前付掉。命令行已完整读回，
+    /// 不会与后续请求错位；失败只记日志，不改变桥可用状态。</summary>
+    private void WarmUp()
+    {
+        try
+        {
+            _stdin!.WriteLine("{\"cmd\":\"warmup\"}");
+            var line = ReadLineOrDispose("AI 桥预热", 8_000);
+            if (!string.IsNullOrWhiteSpace(line)) using (JsonDocument.Parse(line)) { }
+        }
+        catch (Exception ex) when (ex is not TimeoutException and not ObjectDisposedException)
+        {
+            Core.AppLog.Instance.Warn($"AI 桥预热未完成（不影响识别）：{ex.GetType().Name}");
+        }
+    }
+
+    /// <summary>读取一行协议响应（带超时），随时可被 Dispose 置位的 _disposed 打断。
     /// 教训：此前持锁同步 Wait(25s) 不可打断 —— 退出路径的 Dispose 在 _gate 上排队等完整
     /// 冷启动，UI 线程最长卡 25s。分片轮询让 Dispose 置位后握手立即放弃、锁即刻释放。</summary>
-    private void WaitHandshakeOrDispose(Task<string?> readTask)
+    private string? ReadLineOrDispose(string stage, int timeoutMs)
     {
-        long deadline = Environment.TickCount64 + 35_000;
+        var readTask = _stdout!.ReadLineAsync();
+        long deadline = Environment.TickCount64 + timeoutMs;
         while (!readTask.IsCompleted)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(PythonBridge));
             if (Environment.TickCount64 >= deadline)
-                throw new TimeoutException("AI 桥握手超时（35 秒）：Python 或 NumPy 未就绪。请运行设置中心「快速检测 AI 功能」查看具体原因。");
+                throw new TimeoutException($"{stage}超时（{timeoutMs / 1000} 秒）：Python 或 NumPy 未就绪。请运行设置中心「快速检测 AI 功能」查看具体原因。");
             readTask.Wait(100);
         }
+        return readTask.Result;
     }
 
     /// <summary>
@@ -210,12 +277,23 @@ public sealed class PythonBridge : IDisposable
             await EnsureStartedAsync();
             if (!IsRunning) return (null, false);                        // 拉起失败（限流/超时），桥不可达
             double k = Math.Clamp(Core.AppConfig.Current.RecognitionSensitivity, 0.75, 1.3);
+            // 超长笔画等距抽稀：识别引擎自身按 4px 重采样，抽到 1200 点不损失形状特征，
+            // 却能把 JSON 序列化 + IPC + 解析的成本从几十毫秒压回毫秒级（首笔更跟手）。
+            IReadOnlyList<InkPoint> source = target.Points;
+            InkPoint[]? sampled = null;
+            if (source.Count > MaxSentPoints)
+            {
+                sampled = new InkPoint[MaxSentPoints];
+                double step = (source.Count - 1) / (double)(MaxSentPoints - 1);
+                for (int i = 0; i < MaxSentPoints; i++) sampled[i] = source[(int)Math.Round(i * step)];
+                source = sampled;
+            }
             // 协议 v2：options 与识别引擎（pptink_recog）参数一一对应；灵敏度 k 同时调制
             // 全部容差（宽松 → 容差放大 → 手绘更随意也能规整）。引擎侧仍兼容旧字段。
             var req = new
             {
                 cmd = "recognize",
-                points = target.Points.Select(p => new[] { Math.Round(p.X, 1), Math.Round(p.Y, 1) }).ToArray(),
+                points = source.Select(p => new[] { Math.Round(p.X, 1), Math.Round(p.Y, 1) }).ToArray(),
                 options = new
                 {
                     closure_tol = 0.18 * k,        // 闭合判定容差
@@ -231,15 +309,47 @@ public sealed class PythonBridge : IDisposable
             };
             var resp = await SendAsync(JsonSerializer.Serialize(req));
             if (resp is null) return (null, false);                      // 桥不可达（含重启重试后失败）
-            if (!resp.Value.TryGetProperty("ok", out var ok) || !ok.GetBoolean()) return (null, true);
+            if (!resp.Value.TryGetProperty("ok", out var ok) || !ok.GetBoolean())
+            {
+                // ok=false 有两种语义：①正常的"这不像图形"；②桥自身出错。后者必须让
+                // 用户看到具体原因（缺 NumPy / 算法异常），而不是"未识别出规整图形"。
+                string? reason = resp.Value.TryGetProperty("reason", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.String
+                    ? reasonEl.GetString() : null;
+                if (reason is "numpy_missing" or "recognizer_unavailable" or "recognize_failed" or "request_failed")
+                {
+                    string detail = resp.Value.TryGetProperty("detail", out var detailEl) && detailEl.ValueKind == JsonValueKind.String
+                        ? detailEl.GetString() ?? "" : "";
+                    LastUnavailableReason = reason switch
+                    {
+                        "numpy_missing" => "AI 桥缺少 NumPy：请到 设置 → AI 功能 → 快速检测 AI 功能 自动补齐依赖。"
+                                           + (string.IsNullOrWhiteSpace(detail) ? "" : $"（{detail}）"),
+                        "recognizer_unavailable" => "AI 识别模块加载失败：请在 设置 → AI 功能 → 快速检测 AI 功能 中一键修复。",
+                        "recognize_failed" => "AI 识别算法异常（本次已跳过，不影响书写）：" + detail,
+                        _ => "AI 桥内部请求失败，已自动恢复。",
+                    };
+                    return (null, false);
+                }
+                return (null, true);
+            }
 
-            var shape = resp.Value.GetProperty("shape").GetString();
-            var confidence = resp.Value.GetProperty("confidence").GetDouble();
-            var pointValues = resp.Value.GetProperty("points").EnumerateArray()
-                .Select(a => (X: a[0].GetDouble(), Y: a[1].GetDouble()))
+            // 桥是本地进程边界，仍按不可信响应处理：缺字段/类型错/越界数组一律
+            // 当“未识别”，不能让 JsonException 把整个 AI 请求标成桥不可用。
+            if (!resp.Value.TryGetProperty("shape", out var shapeEl) ||
+                !resp.Value.TryGetProperty("confidence", out var confEl) ||
+                !resp.Value.TryGetProperty("points", out var pointsEl) ||
+                pointsEl.ValueKind != System.Text.Json.JsonValueKind.Array ||
+                !confEl.TryGetDouble(out double confidence))
+                return (null, true);
+            var shape = shapeEl.GetString();
+            var pointValues = pointsEl.EnumerateArray()
+                .Take(StrokeData.MaxPoints)
+                .Select(a => a.ValueKind == System.Text.Json.JsonValueKind.Array && a.GetArrayLength() >= 2
+                    ? (X: a[0].GetDouble(), Y: a[1].GetDouble())
+                    : (X: double.NaN, Y: double.NaN))
                 .Where(p => double.IsFinite(p.X) && double.IsFinite(p.Y))
                 .ToArray();
-            if (pointValues.Length < 2) return (null, true);
+            if (pointValues.Length < 2 || double.IsNaN(confidence) || double.IsInfinity(confidence))
+                return (null, true);
 
             // InkPoint timestamps use InkClock's QPC-millisecond domain. Reconstructed points
             // are geometric samples, so distribute the original stroke's time interval evenly;
@@ -257,6 +367,7 @@ public sealed class PythonBridge : IDisposable
         catch (Exception ex)
         {
             Core.AppLog.Instance.Error(ex, "AI 桥请求异常");
+            LastUnavailableReason = $"AI 桥请求异常：{ex.Message}";
             return (null, false);
         }
     }
@@ -266,7 +377,11 @@ public sealed class PythonBridge : IDisposable
     /// 重连放池线程（await 续体可能回到 UI 线程，同步 RestartProcess 会长时间阻塞界面）。</summary>
     private async Task<JsonElement?> SendAsync(string line)
     {
-        if (!await _ioGate.WaitAsync(TimeSpan.FromSeconds(8))) return null;   // 排队上限：桥卡死时不无限堆积
+        if (!await _ioGate.WaitAsync(TimeSpan.FromSeconds(8)))
+        {
+            LastUnavailableReason = "AI 请求排队超时：上一笔识别仍未返回，Python 进程可能已卡死。";
+            return null;   // 排队上限：桥卡死时不无限堆积
+        }
         try
         {
             if (_disposed || !Core.AppConfig.Current.AiEnabled) return null;
@@ -287,6 +402,9 @@ public sealed class PythonBridge : IDisposable
                 catch (Exception ex)
                 {
                     Core.AppLog.Instance.Error(ex, $"AI 桥通信失败（第 {attempt + 1} 次）");
+                    LastUnavailableReason = ex is TimeoutException
+                        ? "AI 识别超时：Python 进程无响应，已尝试自动重启。"
+                        : $"AI 桥通信失败：{ex.Message}";
                     // AI Power 已关闭：绝不再重连（否则"关闭即释放进程"会被在途请求复活）。
                     if (_disposed || !Core.AppConfig.Current.AiEnabled) return null;
                     await Task.Run(() =>

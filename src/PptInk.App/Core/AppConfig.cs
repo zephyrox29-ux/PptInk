@@ -137,6 +137,11 @@ public sealed class AppConfig
     /// </summary>
     public bool PresenterForwardEnabled { get; set; } = true;
 
+    /// <summary>翻页笔媒体键兼容：放映中把音量/亮度键（以及常见媒体上/下一曲）当作
+    /// 上一页/下一页。播放器/系统音量在放映期间不会被改变；可在设置中关闭。
+    /// 这是翻页笔按键失灵时的课堂兜底，不需要焦点落在 PptInk。</summary>
+    public bool PresenterMediaKeyPageTurn { get; set; } = true;
+
     // 墨迹默认值
     public string DefaultColor { get; set; } = "#E8442E"; // 朱红：教学批注醒目
     public double DefaultThicknessMm { get; set; } = 2.2;
@@ -179,6 +184,42 @@ public sealed class AppConfig
 
     /// <summary>识别成功后高亮提示笔迹（短暂强调，让老师知道"刚才那笔画被规整了"）。</summary>
     public bool AiHighlightOnSuccess { get; set; } = true;
+
+    // ———————— 高级识别矫正（v1.0.0Beta，稳定可选；默认关闭） ————————
+
+    /// <summary>高级识别矫正总开关（Beta）：多笔缝隙闭合 / 补笔接续 / 阴影斜杠对齐 /
+    /// 文字防误触 / 疑惑笔迹课后询问。默认关闭，避免未经真机课堂验证的启发式改变板书。</summary>
+    public bool AdvancedCorrectionEnabled { get; set; } = false;
+
+    /// <summary>（Beta）缝隙闭合：两条近乎相交的直线端点差几毫米没碰上时，延长对齐成拐角。</summary>
+    public bool AdvCloseGapEnabled { get; set; } = true;
+
+    /// <summary>（Beta）补笔接续：一笔画完又在后面补一小截时，自动接上成一笔。</summary>
+    public bool AdvContinueStrokeEnabled { get; set; } = true;
+
+    /// <summary>（Beta）阴影斜杠对齐：矩形内多条斜杠自动统一角度、两端吸附到轮廓。</summary>
+    public bool AdvHatchAlignEnabled { get; set; } = true;
+
+    /// <summary>（Beta）缝隙闭合容忍（毫米）0.5~20。</summary>
+    public double AdvGapToleranceMm { get; set; } = 4;
+
+    /// <summary>（Beta）补笔接续容忍（毫米）1~30。</summary>
+    public double AdvSnapToleranceMm { get; set; } = 6;
+
+    /// <summary>（Beta）疑惑笔迹课后询问：置信度落在疑惑区间的笔迹保留候选，下课后询问。</summary>
+    public bool DoubtReviewEnabled { get; set; } = true;
+
+    /// <summary>（Beta）疑惑置信度下界 0.10~0.90。</summary>
+    public double DoubtConfidenceLow { get; set; } = 0.45;
+
+    /// <summary>（Beta）疑惑置信度上界 0.50~0.99。</summary>
+    public double DoubtConfidenceHigh { get; set; } = 0.75;
+
+    /// <summary>（Beta）文字/公式防误触：密集短笔画不做图形规整。</summary>
+    public bool TextGuardEnabled { get; set; } = true;
+
+    /// <summary>（Beta）文字判据灵敏度 0.5~2.0：越大越容易判为文字（越保守）。</summary>
+    public double TextGuardSensitivity { get; set; } = 1.0;
 
     // ———————— 笔墨高级参数（v1.0.0 高级模式：精调手感） ————————
 
@@ -426,6 +467,15 @@ public sealed class AppConfig
         cfg.PenPressureGain = double.IsFinite(cfg.PenPressureGain) ? Math.Clamp(cfg.PenPressureGain, 0.0, 1.0) : 0.5;
         cfg.HighlighterTipRatio = double.IsFinite(cfg.HighlighterTipRatio) ? Math.Clamp(cfg.HighlighterTipRatio, 0.30, 1.0) : 0.5;
         cfg.HighlighterAlpha = double.IsFinite(cfg.HighlighterAlpha) ? Math.Clamp(cfg.HighlighterAlpha, 0.20, 0.80) : 0.43;
+        // Beta 高级矫正参数钳制；未知/手改配置不能击穿几何后处理。
+        cfg.AdvGapToleranceMm = double.IsFinite(cfg.AdvGapToleranceMm) ? Math.Clamp(cfg.AdvGapToleranceMm, 0.5, 20) : 4;
+        cfg.AdvSnapToleranceMm = double.IsFinite(cfg.AdvSnapToleranceMm) ? Math.Clamp(cfg.AdvSnapToleranceMm, 1, 30) : 6;
+        cfg.DoubtConfidenceLow = double.IsFinite(cfg.DoubtConfidenceLow) ? Math.Clamp(cfg.DoubtConfidenceLow, 0.10, 0.90) : 0.45;
+        cfg.DoubtConfidenceHigh = double.IsFinite(cfg.DoubtConfidenceHigh) ? Math.Clamp(cfg.DoubtConfidenceHigh, 0.50, 0.99) : 0.75;
+        if (cfg.DoubtConfidenceHigh <= cfg.DoubtConfidenceLow)
+            cfg.DoubtConfidenceHigh = Math.Min(0.99, cfg.DoubtConfidenceLow + 0.10);
+        cfg.TextGuardSensitivity = double.IsFinite(cfg.TextGuardSensitivity) ? Math.Clamp(cfg.TextGuardSensitivity, 0.5, 2.0) : 1.0;
+        cfg.EraseMode = cfg.EraseMode is "pixel" or "stroke" ? cfg.EraseMode : "pixel";
         cfg.DefaultEraseMode = cfg.DefaultEraseMode is "stroke" or "lasso" or "clear" ? cfg.DefaultEraseMode : "stroke";
         cfg.AfterClearTool = cfg.AfterClearTool is "smart" or "pen" or "touch" or "keep" ? cfg.AfterClearTool : "smart";
         cfg.AccentColor = SafeColor(cfg.AccentColor, "#78AFA5");

@@ -26,6 +26,7 @@ public sealed class PackageInstaller
             issues.AddRange(ManifestValidator.Validate(manifest, _ => true));
             issues.AddRange(LuaSyntaxChecker.Check(project.LuaSource));
             issues.AddRange(CrossConsistencyChecker.Check(project));
+            issues.AddRange(ManifestValidator.ValidateContent(project.LuaSource, project.Resources));
             var firstError = issues.FirstOrDefault(i => i.IsError);
             if (firstError is not null)
             {

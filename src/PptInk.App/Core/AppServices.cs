@@ -16,6 +16,8 @@ namespace PptInk.Core;
 public sealed class AppServices
 {
     public AppConfig Config { get; }
+    /// <summary>便携模式：不写开机自启（程序目录删除即停止驻留，不做系统级安装）。</summary>
+    public bool IsPortable { get; }
     public AppLog Log => AppLog.Instance;
     public AutoStartRegistrar AutoStart { get; } = new();
     public PreWarmer PreWarm { get; }
@@ -35,9 +37,10 @@ public sealed class AppServices
     public TouchDigitizer TouchDigitizer { get; }
     private readonly CancellationTokenSource _controlPipeCts = new();
 
-    private AppServices(App app, AppConfig config)
+    private AppServices(App app, AppConfig config, bool portable)
     {
         Config = config;
+        IsPortable = portable;
 
         DeviceProfiles = new DeviceProfileStore();
         DeviceProfiles.LoadDefaults();
@@ -181,10 +184,10 @@ public sealed class AppServices
         }, token);
     }
 
-    public static AppServices Compose(App app)
+    public static AppServices Compose(App app, bool portable = false)
     {
         AppLog.Instance.Start();
-        return new AppServices(app, AppConfig.Current);
+        return new AppServices(app, AppConfig.Current, portable);
     }
 
     /// <summary>有序释放：先停检测避免半关闭状态下收到事件，再收 UI，然后先落会话墨迹

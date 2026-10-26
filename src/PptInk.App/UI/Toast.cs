@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
+using System.Windows.Threading;
 using PptInk.Core;
 using System.Collections.Generic;
 
@@ -177,6 +178,7 @@ internal sealed class ToastElement : StageElement
     }
 
     private bool _positioned;
+    private DispatcherTimer? _reducedMotionTimer;
 
     /// <summary>首次获得真实尺寸时精调右下锚点并启动进/退场动画（幂等：只执行一次）。</summary>
     private void PositionAndAnimate()
@@ -193,6 +195,20 @@ internal sealed class ToastElement : StageElement
         ScreenLeft = position.X;
         ScreenTop = position.Y;
         Visibility = Visibility.Visible; // first visible frame already has a valid exclusive slot
+        if (Core.AppConfig.Current.ReduceMotion)
+        {
+            _host.BeginAnimation(UIElement.OpacityProperty, null);
+            _host.Opacity = 1;
+            _reducedMotionTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2600) };
+            _reducedMotionTimer.Tick += (_, _) =>
+            {
+                _reducedMotionTimer?.Stop();
+                _reducedMotionTimer = null;
+                Retire(restoreBorrowed: true);
+            };
+            _reducedMotionTimer.Start();
+            return;
+        }
         AnimationKit.PopOpen(_host, 140);   // 快速吮吸进场（克制：Toast 是配角）
         var fade = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(320))
         {
@@ -212,6 +228,8 @@ internal sealed class ToastElement : StageElement
     /// <summary>退场收口：清静态引用 + 卸载退订 + 借窗还原。</summary>
     private void Retire(bool restoreBorrowed, bool scheduleDeferredFlush = true)
     {
+        _reducedMotionTimer?.Stop();
+        _reducedMotionTimer = null;
         Toast.Retire(this, scheduleDeferredFlush);
         Close();   // 基类：从舞台卸载 + 退订 ThemeChanged/LocationChanged（短命元素防泄漏）
         // 借窗还原：仅自然退场路径（DismissNow 顶替时窗还在给新 Toast 用）；

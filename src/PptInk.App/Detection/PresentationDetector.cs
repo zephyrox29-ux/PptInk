@@ -31,6 +31,11 @@ public sealed class PresentationDetector : IDisposable
         _com.Started += OnComStarted;
         _com.SlideChanged += OnComSlideChanged;
         _com.Ended += OnComEnded;
+        _com.Unbound += (_, _) =>
+        {
+            // COM 断开后让 WinEvent 的翻页计数重新有机会接管。
+            lock (_gate) { if (!_com.IsHealthy) _activeSource = ""; }
+        };
 
         _winEvent.Started += OnWinStarted;
         _winEvent.SlideChanged += OnWinSlideChanged;
@@ -44,6 +49,7 @@ public sealed class PresentationDetector : IDisposable
         // GetActiveObject 开销微秒级，可视为零成本，不违反零轮询目标）
         _rebindTimer = new Timer(_ =>
         {
+            _com.ProbeHealth();
             if (!_com.IsHealthy) _com.TryBind();
         }, null, 5_000, 5_000);
     }
@@ -89,11 +95,13 @@ public sealed class PresentationDetector : IDisposable
 
     private void OnWinSlideChanged(object? sender, SlideChangedEvent e)
     {
-        lock (_gate)
-        {
-            if (!_showActive || _activeSource.StartsWith("COM", StringComparison.Ordinal)) return; // COM 健康时兜底不说话
-            _lastEventAt = DateTime.UtcNow;
-        }
+lock (_gate)
+            {
+                // COM 健康时以 COM 页码为准；COM 已断开/不可用时必须放行 WinEvent
+                // 的兜底计数，否则 _activeSource 里残留的 "COM:..." 会永久静默兜底翻页。
+                if (!_showActive || (_com.IsHealthy && _activeSource.StartsWith("COM", StringComparison.Ordinal))) return;
+                _lastEventAt = DateTime.UtcNow;
+            }
         SlideChanged?.Invoke(this, e);
     }
 

@@ -1,6 +1,6 @@
-using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Windows.Threading;
 using PptInk.Core;
 
 namespace PptInk.Detection;
@@ -10,6 +10,12 @@ namespace PptInk.Detection;
 /// SlideShowBegin / SlideShowNextSlide / SlideShowEnd，零轮询开销。
 /// WPS 演示走其兼容 COM 接口（ProgID KWPP.Application，对象模型与 MS PPT 基本兼容）。
 /// .NET 8 已移除 Marshal.GetActiveObject，此处手工 P/Invoke 获取运行中实例（绝不 New 一个 PPT）。
+///
+/// 线程纪律（v1.1.2 修复）：本前使用 BlockingCollection 承载工作，却没有为 STA 线程
+/// 建立消息泵；COM ConnectionPoint 的 sink 是跨套间调用，必须由订阅线程的消息循环
+/// 派发。结果 Begin/Next/End 事件可能永远收不到，且 PPT 侧还会等待一个永远不泵消息的
+/// STA。现在专用线程运行 <see cref="Dispatcher"/>：队列投递、COM 事件派发、Unadvise
+/// 与 RCW 释放全部在同一 STA 上串行完成。
 /// </summary>
 public sealed class ComWatcher : IPresentationChannel
 {
@@ -17,10 +23,12 @@ public sealed class ComWatcher : IPresentationChannel
     private static readonly string[] ProgIds = ["PowerPoint.Application", "KWPP.Application"];
 
     private readonly Thread _comThread;
-    private readonly BlockingCollection<Action> _comQueue = new(boundedCapacity: 64);
+    private readonly ManualResetEventSlim _dispatcherReady = new(false);
+    private Dispatcher? _dispatcher;
     private dynamic? _app;
     private string _boundProgId = "";
     private volatile bool _running;
+    private volatile bool _disposed;
     // dynamic COM 事件的 +=/-=：方法组不能直接作 dynamic 运算操作数（CS0019），
     // 缓存委托实例保证订阅/退订用同一引用（DLR 据此映射 IConnectionPoint Advise/Unadvise cookie）
     private Action<object>? _beginHandler;
@@ -28,11 +36,13 @@ public sealed class ComWatcher : IPresentationChannel
     private Action<object>? _endHandler;
 
     public string Name => $"COM:{_boundProgId}";
-    public bool IsHealthy => _app is not null;
+    public bool IsHealthy => _running && !_disposed && _app is not null;
 
     public event EventHandler<ShowStartedEvent>? Started;
     public event EventHandler<SlideChangedEvent>? SlideChanged;
     public event EventHandler? Ended;
+    /// <summary>连接点因异常/探活失败被释放（通知仲裁器允许兜底通道接管翻页事件）。</summary>
+    public event EventHandler? Unbound;
 
     public ComWatcher()
     {
@@ -47,32 +57,71 @@ public sealed class ComWatcher : IPresentationChannel
         _running = true;
         _comThread.Start();
 
-        // PPT 可能先于本程序启动（自启顺序），启动即尝试绑定一次；
-        // 之后由兜底通道在发现新 PPT 进程前台化时回调 TryBind（见 PresentationDetector）
+        // 等待 Dispatcher 建立后再投递绑定，避免 Start 早期的 Post 丢在 null dispatcher 上。
+        if (!_dispatcherReady.Wait(TimeSpan.FromSeconds(3)))
+        {
+            AppLog.Instance.Warn("COM 通道启动失败：STA 消息泵在 3 秒内未就绪");
+            return;
+        }
         Post(TryBindCore);
     }
 
     /// <summary>公共入口（兜底通道回调）：投递一次绑定尝试到 COM 线程。</summary>
     public void TryBind() => Post(TryBindCore);
 
+    /// <summary>探活：在 STA 消息泵上做一次轻量 COM 调用，发现 RCW 断开则解绑重绑。</summary>
+    public void ProbeHealth() => Post(ProbeHealthCore);
+
     private void ComThreadLoop()
     {
-        while (_comQueue.TryTake(out var work, Timeout.Infinite))
+        // 必须先在本线程取 Dispatcher 并 Run，才能让 COM 的跨套间回调被派发。
+        _dispatcher = Dispatcher.CurrentDispatcher;
+        _dispatcherReady.Set();
+        try
         {
-            try { work(); }
-            catch (COMException ex) { AppLog.Instance.Warn($"COM 通道异常（可能权限不一致/Office 未激活）：0x{ex.HResult:X8}"); Unbind(); }
-            catch (Exception ex) { AppLog.Instance.Error(ex, "COM 通道异常"); }
+            Dispatcher.Run();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Error(ex, "COM 通道消息泵异常退出");
         }
     }
 
+    /// <summary>投递到专用 STA。所有 COM 订阅/退订/RCW 释放必须走这里。</summary>
     private void Post(Action work)
     {
-        try { _comQueue.TryAdd(work); } catch { /* 队列满：丢弃旧绑定尝试 */ }
+        var dispatcher = _dispatcher;
+        if (dispatcher is null || _disposed || dispatcher.HasShutdownStarted) return;
+        try
+        {
+            dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() =>
+            {
+                if (_disposed) return;
+                ExecuteSafely(work);
+            }));
+        }
+        catch (InvalidOperationException)
+        {
+            // Dispatcher 正在关闭：进程退出路径，忽略。
+        }
+    }
+
+    private static void ExecuteSafely(Action work)
+    {
+        try { work(); }
+        catch (COMException ex)
+        {
+            AppLog.Instance.Warn($"COM 通道异常（可能权限不一致/Office 未激活）：0x{ex.HResult:X8}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Error(ex, "COM 通道异常");
+        }
     }
 
     private void TryBindCore()
     {
-        if (_app is not null) return;
+        if (_disposed || _app is not null || !_running) return;
         foreach (var progId in ProgIds)
         {
             dynamic? app = null;
@@ -111,6 +160,22 @@ public sealed class ComWatcher : IPresentationChannel
                 AppLog.Instance.Warn($"{progId} 事件接口不兼容（WPS 旧版本），主通道让位给兜底通道");
                 RollbackPartialBind(app);
             }
+        }
+    }
+
+    private void ProbeHealthCore()
+    {
+        if (_disposed || _app is null) return;
+        try
+        {
+            // Count 是同步 COM 调用；这里在专用 STA 上执行，不占 UI 线程。
+            _ = _app.SlideShowWindows.Count;
+            _ = _app.Name;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn($"COM 通道探活失败，已解绑等待重连：{ex.GetType().Name}: {ex.Message}");
+            Unbind();
         }
     }
 
@@ -167,42 +232,56 @@ public sealed class ComWatcher : IPresentationChannel
     private void OnSlideShowEnd(dynamic presentation)
     {
         Ended?.Invoke(this, EventArgs.Empty);
-        // WPS 在 End 后偶尔不再触发后续 Begin（同进程二次放映），
-        // 主动解绑重订，规避"第二次放映不唤起"
-        Unbind();
-        Post(TryBind);
+        // WPS 在 End 后偶尔不再触发后续 Begin（同进程二次放映），主动解绑重订，
+        // 规避"第二次放映不唤起"。不能在事件回调栈内同步 Unadvise：那会形成
+        // RPC_E_CANTCALLOUT_ININPUTSYNCCALL，连接点残留。投递到消息泵空闲时执行。
+        Post(() =>
+        {
+            Unbind();
+            TryBindCore();
+        });
     }
 
     private void Unbind()
     {
-        if (_app is null) return;
+        var app = _app;
+        if (app is null) return;
         try
         {
-            if (_beginHandler is not null) _app.SlideShowBegin -= _beginHandler;
-            if (_nextHandler is not null) _app.SlideShowNextSlide -= _nextHandler;
-            if (_endHandler is not null) _app.SlideShowEnd -= _endHandler;
+            if (_beginHandler is not null) app.SlideShowBegin -= _beginHandler;
+            if (_nextHandler is not null) app.SlideShowNextSlide -= _nextHandler;
+            if (_endHandler is not null) app.SlideShowEnd -= _endHandler;
         }
-        catch { }
+        catch (Exception ex)
+        {
+            AppLog.Instance.Warn($"COM 事件退订异常（连接点可能残留）：{ex.GetType().Name}: {ex.Message}");
+        }
         _beginHandler = _nextHandler = _endHandler = null;
         _app = null;
         _boundProgId = "unbound";
+        try { if (Marshal.IsComObject(app)) Marshal.ReleaseComObject(app); } catch { }
+        try { Unbound?.Invoke(this, EventArgs.Empty); } catch { }
     }
 
     public void Dispose()
     {
-        _running = false;
-        // v0.8.1 关闭时序修复：Unbind 的 dynamic -= 是 COM Unadvise，经 RCW 封送到
-        // 订阅发生的 STA 线程执行。原实现先 CompleteAdding（STA 线程随即退出循环）再在
-        // UI 线程调 Unbind —— 封送目标已死，抛 RemotingException 被 catch 吞掉，
-        // Unadvise 从未真正执行、连接点泄漏；ReleaseComObject 在 UI 线程与之竞争还有
-        // ObjectDisconnected 风险。正确时序：解绑与 RCW 释放都投递进 COM 线程队列
-        //（先 Post 再 CompleteAdding，队列内串行执行），UI 线程短等干净收尾。
-        var app = _app;
-        Post(Unbind);
-        if (app is not null && Marshal.IsComObject(app))
-            Post(() => Marshal.ReleaseComObject(app));
-        _comQueue.CompleteAdding();
-        _comThread.Join(800);   // 最多等 800ms：进程退出时 COM 兜底释放连接点，此等待只为干净关闭
+        if (_disposed) return;
+        _disposed = true;
+        var dispatcher = _dispatcher;
+        if (dispatcher is not null)
+        {
+            try
+            {
+                // 同步等 STA 完成 Unadvise/ReleaseComObject；即使 COM 卡住也只等 1s，
+                // 之后仍强制关闭消息泵，不拖住进程退出。
+                dispatcher.Invoke(new Action(Unbind), DispatcherPriority.Send,
+                    CancellationToken.None, TimeSpan.FromSeconds(1));
+            }
+            catch { }
+            try { dispatcher.BeginInvokeShutdown(DispatcherPriority.Send); } catch { }
+        }
+        _dispatcherReady.Dispose();
+        _comThread.Join(1500);   // 最多等 1.5s：进程退出时 COM 兜底释放连接点
     }
 
     #region GetActiveObject P/Invoke（.NET 8 无内置实现）
