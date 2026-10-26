@@ -118,17 +118,17 @@ public static class ToolbarFactory
     /// icon 为已构建的 Path（IconFill 样式 + 几何由调用方 FindResource）。
     /// 按压脉冲在此统一做（一份真相）——调用方 lambda 只写业务动作，无需捕获按钮自身。
     /// </summary>
-    public static Button BuildSimple(Path icon, string tip, Action onPressed, string? label = null)
+    public static Button BuildSimple(Path icon, string tip, Action onPressed, string? label = null, bool compact = false)
     {
         var b = new Button
         {
             Style = (Style)Application.Current.FindResource("ToolButtonStyle"),
             ToolTip = tip,
-            Content = MakeButtonContent(icon, label),
+            Content = MakeButtonContent(icon, label, compact),
             Focusable = false,
             IsTabStop = false,
         };
-        ApplyLabelSize(b);
+        ApplyLabelSize(b, compact);
         PressWire(b, () => { AnimationKit.PressPulse(b); onPressed(); });
         return b;
     }
@@ -153,10 +153,12 @@ public static class ToolbarFactory
     /// <summary>图标下文字开关（默认开）。</summary>
     public static bool LabelsOn => Core.AppConfig.Current.ToolbarShowLabels;
 
-    /// <summary>按钮内容：开启标签时 = 图标 + 下方中文短名；否则纯图标。</summary>
-    public static FrameworkElement MakeButtonContent(Path icon, string? label)
+    /// <summary>按钮内容：开启标签时 = 图标 + 下方中文短名；否则纯图标。
+    /// compact（v1.1.2 槽位拥挤降级）强制纯图标，把按钮从 60×62 压回 48×48，
+    /// 让 1024 宽一体机上 9 个按钮 + 手柄 + 结束放映仍能全部落在中央槽内。</summary>
+    public static FrameworkElement MakeButtonContent(Path icon, string? label, bool compact = false)
     {
-        if (!LabelsOn || string.IsNullOrWhiteSpace(label)) return icon;
+        if (compact || !LabelsOn || string.IsNullOrWhiteSpace(label)) return icon;
         icon.Width = 20;
         icon.Height = 20;
         icon.HorizontalAlignment = HorizontalAlignment.Center;
@@ -181,9 +183,15 @@ public static class ToolbarFactory
         return stack;
     }
 
-    /// <summary>带标签时按钮加宽加高，给图标下文字留纵向空间。</summary>
-    public static void ApplyLabelSize(Button b)
+    /// <summary>带标签时按钮加宽加高，给图标下文字留纵向空间；compact 时固定 48×48。</summary>
+    public static void ApplyLabelSize(Button b, bool compact = false)
     {
+        if (compact)
+        {
+            b.Width = 48;
+            b.Height = 48;
+            return;
+        }
         if (!LabelsOn) return;
         b.Width = 60;
         b.Height = 62;

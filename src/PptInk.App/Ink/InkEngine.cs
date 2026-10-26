@@ -529,6 +529,11 @@ public sealed class InkEngine
 
     // ———————— 撤销/重做（分支树） ————————
 
+    /// <summary>当前页是否可撤销/重做：工具栏按钮据此置灰（v1.1.2）。
+    /// 原先按钮永远可点，空历史时点击毫无反馈 —— 用户会当成"按钮坏了"。</summary>
+    public bool CanUndo { get { lock (_gate) return CurrentPage.History.CanUndo; } }
+    public bool CanRedo { get { lock (_gate) return CurrentPage.History.CanRedo; } }
+
     public bool Undo()
     {
         bool ok;

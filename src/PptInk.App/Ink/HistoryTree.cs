@@ -178,6 +178,8 @@ public sealed class HistoryTree
     public HistoryNode Head { get; private set; }
 
     public bool CanUndo => Head != Root;
+    /// <summary>当前节点下是否还有可重做的子分支（工具栏按钮禁用态用）。</summary>
+    public bool CanRedo => Head.Children.Count > 0;
     public int Depth { get; private set; }
 
     /// <summary>矢量历史节点总数上限（审查修复 #4）：长课堂大量书写/撤销下防无界增长，

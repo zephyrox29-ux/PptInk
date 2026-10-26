@@ -25,6 +25,47 @@ public sealed partial class Toolbar
     /// </summary>
     public void RebuildLayout()
     {
+        // 先按常规（图标 + 文字）构建并测量；槽位放不下再单向降级为纯图标重建一次。
+        // 不做"降级后再尝试回退"的循环，避免测量/重建来回振荡。
+        BuildButtons(compact: false);
+        if (RowVisualWidth() > AvailableLaneWidth + 0.5)
+            BuildButtons(compact: true);
+        RefreshSelection();
+        NotifyGeometryChanged();
+    }
+
+    /// <summary>当前按钮行在屏幕坐标系（含 LayoutTransform 缩放）的视觉宽度，含边框内边距余量。</summary>
+    private double RowVisualWidth()
+    {
+        _rootRow.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double w = _rootRow.DesiredSize.Width;
+        return (double.IsFinite(w) && w > 0 ? w : 0) * ScaleFactor + 18;
+    }
+
+    /// <summary>槽位/缩放变化后重新判定紧凑模式：只在状态不匹配时重建，稳定后零开销。
+    /// 极端窄屏连紧凑都放不下时打开横向滚动条 —— 按钮按下即执行，无法靠拖动滚动，
+    /// 这条滚动条是「结束放映」等尾部按钮最后一条可达路径。</summary>
+    private void FitCompactLayout()
+    {
+        bool overflow = RowVisualWidth() > AvailableLaneWidth + 0.5;
+        if (overflow && !_compact)
+        {
+            BuildButtons(compact: true);
+            RefreshSelection();
+        }
+        else if (_compact && !overflow)
+        {
+            BuildButtons(compact: false);
+            if (RowVisualWidth() > AvailableLaneWidth + 0.5) BuildButtons(compact: true);   // 回退失败：保持紧凑
+            RefreshSelection();
+        }
+        _toolScroller.HorizontalScrollBarVisibility =
+            RowVisualWidth() > AvailableLaneWidth + 0.5 ? ScrollBarVisibility.Auto : ScrollBarVisibility.Hidden;
+    }
+
+    private void BuildButtons(bool compact)
+    {
+        _compact = compact;
         _rootRow.Children.Clear();
         _buttons.Clear();
 
@@ -44,29 +85,28 @@ public sealed partial class Toolbar
             switch (item.Id)
             {
                 case "touch" or "pen" or "highlighter":
-                    _rootRow.Children.Add(BuildToolButton(item));
+                    _rootRow.Children.Add(BuildToolButton(item, compact));
                     break;
                 case "erase":
-                    _rootRow.Children.Add(BuildEraseButton(item));
+                    _rootRow.Children.Add(BuildEraseButton(item, compact));
                     break;
                 case "undo":
-                    _rootRow.Children.Add(BuildSimpleButton(item, "IconUndo", () => UndoRequested?.Invoke()));
+                    _rootRow.Children.Add(BuildSimpleButton(item, "IconUndo", () => UndoRequested?.Invoke(), compact));
                     break;
                 case "redo":
-                    _rootRow.Children.Add(BuildSimpleButton(item, "IconRedo", () => RedoRequested?.Invoke()));
+                    _rootRow.Children.Add(BuildSimpleButton(item, "IconRedo", () => RedoRequested?.Invoke(), compact));
                     break;
                 case "ai":
-                    _rootRow.Children.Add(BuildSimpleButton(item, "IconAi", () => ShapeAssistRequested?.Invoke()));
+                    _rootRow.Children.Add(BuildSimpleButton(item, "IconAi", () => ShapeAssistRequested?.Invoke(), compact));
                     break;
                 case "plugin":
-                    _rootRow.Children.Add(BuildSimpleButton(item, "IconPlugin", () => _svc.Plugins.ToggleQuickPanel(GetPluginButtonRect())));
+                    _rootRow.Children.Add(BuildSimpleButton(item, "IconPlugin", () => _svc.Plugins.ToggleQuickPanel(GetPluginButtonRect()), compact));
                     break;
             }
         }
 
         // 结束放映：恒定尾部
-        _rootRow.Children.Add(BuildExitButton());
-        NotifyGeometryChanged();
+        _rootRow.Children.Add(BuildExitButton(compact));
     }
 
     private Border BuildGrip()
@@ -110,7 +150,7 @@ public sealed partial class Toolbar
         return b;
     }
 
-    private Button BuildToolButton(ToolbarCatalog.Item item)
+    private Button BuildToolButton(ToolbarCatalog.Item item, bool compact)
     {
         var tool = item.Tool!.Value;
         var icon = ToolbarFactory.Icon(item.Icon);
@@ -118,9 +158,9 @@ public sealed partial class Toolbar
         {
             Style = (Style)Application.Current.FindResource("ToolButtonStyle"),
             ToolTip = item.Tip,
-            Content = ToolbarFactory.MakeButtonContent(icon, item.Name),
+            Content = ToolbarFactory.MakeButtonContent(icon, item.Name, compact),
         };
-        ToolbarFactory.ApplyLabelSize(b);
+        ToolbarFactory.ApplyLabelSize(b, compact);
         // v0.7.0 点击即有：按下瞬间执行（微滑不丢点）
         ToolbarFactory.PressWire(b, () => HandleToolClick(tool, b));
         _buttons[item.Id] = b;
@@ -141,16 +181,16 @@ public sealed partial class Toolbar
             SelectTool(tool);       // 首次点击 → 直接进模式（上次设置）
     }
 
-    private Button BuildEraseButton(ToolbarCatalog.Item item)
+    private Button BuildEraseButton(ToolbarCatalog.Item item, bool compact)
     {
         var icon = ToolbarFactory.Icon("IconEraser");
         var b = new Button
         {
             Style = (Style)Application.Current.FindResource("ToolButtonStyle"),
             ToolTip = item.Tip,
-            Content = ToolbarFactory.MakeButtonContent(icon, item.Name),
+            Content = ToolbarFactory.MakeButtonContent(icon, item.Name, compact),
         };
-        ToolbarFactory.ApplyLabelSize(b);
+        ToolbarFactory.ApplyLabelSize(b, compact);
         // 与书写工具同款 toggle：首次点击直接进默认擦除模式，再次点击才弹三模式浮岛
         ToolbarFactory.PressWire(b, () =>
         {
@@ -164,19 +204,19 @@ public sealed partial class Toolbar
         return b;
     }
 
-    private Button BuildSimpleButton(ToolbarCatalog.Item item, string icon, Action onClick)
+    private Button BuildSimpleButton(ToolbarCatalog.Item item, string icon, Action onClick, bool compact)
     {
-        var b = ToolbarFactory.BuildSimple(ToolbarFactory.Icon(icon), item.Tip, onClick, item.Name);
+        var b = ToolbarFactory.BuildSimple(ToolbarFactory.Icon(icon), item.Tip, onClick, item.Name, compact);
         _buttons[item.Id] = b;
         return b;
     }
 
     /// <summary>结束放映：恒定尾部元素（低频高危操作，不进翻页岛防误触）。
     /// v0.8.0：图标染警示琥珀——高危操作一眼可辨（与衢青交互色明确区分）。</summary>
-    private Button BuildExitButton()
+    private Button BuildExitButton(bool compact)
     {
         var exit = ToolbarFactory.BuildSimple(ToolbarFactory.Icon("IconStop"), "结束放映",
-            () => ExitShowRequested?.Invoke(), "结束");
+            () => ExitShowRequested?.Invoke(), "结束", compact);
         if (ToolbarFactory.IconPathOf(exit.Content) is { } p)
             p.SetResourceReference(Path.FillProperty, "AccentAmberBrush");
         _buttons["nav.exit"] = exit;
@@ -215,8 +255,29 @@ public sealed partial class Toolbar
             _ => null,
         };
         foreach (var (id, b) in _buttons)
+        {
+            // 结束放映恒定警示琥珀：SetToolActive 会把图标改回暖白，原实现每次
+            // 切换工具都把这条高危警示抹掉（与 BuildExitButton 的染色直接冲突）。
+            if (id == "nav.exit") continue;
             ToolbarFactory.SetToolActive(b, id == activeId);   // 朱砂点亮 / 暖白常态
-        RefreshAiBadge();   // AI 是开关（非工具）：其点亮态独立于工具选中，需在工具刷新后回填
+        }
+        RefreshAiBadge();        // AI 是开关（非工具）：其点亮态独立于工具选中，需在工具刷新后回填
+        RefreshHistoryButtons(); // 撤销/重做可用性随页面历史变化
+    }
+
+    /// <summary>撤销/重做可用性：无历史时置灰并降透明度，避免"点了没反应"被当成按钮故障。
+    /// 禁用态同时阻断 PressWire（WPF 不向 IsEnabled=false 的元素派发输入）。</summary>
+    public void RefreshHistoryButtons()
+    {
+        SetButtonEnabled("undo", _svc.InkEngine.CanUndo);
+        SetButtonEnabled("redo", _svc.InkEngine.CanRedo);
+    }
+
+    private void SetButtonEnabled(string id, bool enabled)
+    {
+        if (!_buttons.TryGetValue(id, out var b)) return;
+        b.IsEnabled = enabled;
+        b.Opacity = enabled ? 1.0 : 0.4;
     }
 
     /// <summary>主题热切换后刷新选中高亮（brush 实例已换；编排器 ThemeChanged 转发调用）。</summary>

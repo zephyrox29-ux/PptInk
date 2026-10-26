@@ -59,6 +59,7 @@ public sealed partial class Toolbar
         MaxWidth = Math.Max(1, _dockLaneRight - _dockLaneLeft);
         // 槽宽是屏幕坐标；scroller 在缩放后的工具栏内部，约束要换算回本地坐标
         _toolScroller.MaxWidth = MaxWidth / Math.Max(0.01, ScaleFactor);
+        FitCompactLayout();   // 槽位变窄/变宽后重新判定纯图标紧凑模式
         UpdateLayout();
         ClampToScreen();
     }
@@ -116,8 +117,8 @@ public sealed partial class Toolbar
         if (_gripVisual is not null) _gripVisual.Background = Brushes.Transparent;
         if (wasDragging)
         {
-            // 手柄拖动只改变中央槽位内的横向位置；Y 轴固定在专属底部行，
-            // 因此操作轨迹本身就不可能把工具栏拖到翻页岛或其他面板上。
+            // X 限制在左右翻页岛之间的中央槽；Y 自 v1.1.2 起允许自由拖动（出屏才钳回），
+            // 教师可以把工具栏移到屏幕中部，避开黑板/白板遮挡区域。
             ClampToScreen();
             _svc.Config.ToolbarDockX = Left;
             _svc.Config.ToolbarDockY = Top;

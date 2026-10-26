@@ -45,6 +45,10 @@ public sealed partial class Toolbar : StageElement
     private StylusDevice? _gripStylusCapture;
     private bool _gripMouseCapture;
     private InkTool _currentTool = InkTool.Pen;
+    /// <summary>v1.1.2：槽位放不下完整按钮时自动降级为纯图标紧凑模式。
+    /// 原先超宽部分被 ScrollViewer 裁掉且触摸按下即执行、无法拖动滚动 ——
+    /// 1024 宽一体机上「结束放映」「插件」会直接不可达。</summary>
+    private bool _compact;
 
     // 双形态容器字段（原 xaml x:Name；构造器 BuildRoot 即赋值，null! 断言构造后恒可用）
     private Border _palettePanel = null!;
@@ -60,6 +64,12 @@ public sealed partial class Toolbar : StageElement
     internal double DockLaneLeft => _dockLaneConfigured ? _dockLaneLeft : ShowScreen.Bounds.Left + 240;
     internal double DockLaneRight => _dockLaneConfigured ? _dockLaneRight : ShowScreen.Bounds.Right - 240;
     internal double DockBottom => _dockLaneConfigured ? _dockBottom : ShowScreen.Bounds.Bottom - (_svc.Config.RespectGestureZone ? 48 : 8);
+
+    /// <summary>可用槽宽（屏幕 DIP）。尚未分配槽位时按屏幕宽度保守估算，
+    /// 供 RebuildLayout 判断是否需要紧凑降级。</summary>
+    private double AvailableLaneWidth =>
+        _dockLaneConfigured ? Math.Max(1, _dockLaneRight - _dockLaneLeft)
+                            : Math.Max(1, ShowScreen.Bounds.Width - 480);
 
     /// <summary>Left/Top 包装（屏幕 DIP，与旧 Window.Left/Top 同语义）——原 1032 行窗口
     /// 逻辑的坐标读写零迁移；动画走 ScreenLeftProperty/ScreenTopProperty（包装是 CLR 属性）。</summary>

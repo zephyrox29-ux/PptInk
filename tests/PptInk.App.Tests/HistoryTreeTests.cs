@@ -66,6 +66,29 @@ public sealed class HistoryTreeTests
     }
 
     [Fact]
+    public void CanUndoCanRedo_TrackBranchState()
+    {
+        // 工具栏撤销/重做按钮的禁用态直接读这两个属性（v1.1.2）：
+        // 空历史时按钮必须置灰，撤销后"重做"必须立即可用，否则用户会以为按钮坏了。
+        var page = NewPage();
+        var h = page.History;
+        Assert.False(h.CanUndo);
+        Assert.False(h.CanRedo);
+
+        h.Commit(new AddStrokeOp(NewStroke(1)));
+        Assert.True(h.CanUndo);
+        Assert.False(h.CanRedo);
+
+        h.Undo();
+        Assert.False(h.CanUndo);
+        Assert.True(h.CanRedo);
+
+        h.Redo();
+        Assert.True(h.CanUndo);
+        Assert.False(h.CanRedo);
+    }
+
+    [Fact]
     public void LinearHistory_ReRootTrimKeepsBound()
     {
         // v1.1.0 修复验证：线性书写（无分支）超过 MaxNodes 时必须重新定根斩掉最老

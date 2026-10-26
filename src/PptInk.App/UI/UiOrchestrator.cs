@@ -256,7 +256,15 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
         if (_overlayWired) return;
         _overlayWired = true;
         // 渲染失效接线（墨迹/擦除 → 重绘请求）
-        _svc.InkEngine.VisualInvalidated += (_, _) => _overlay?.Invalidate();
+        _svc.InkEngine.VisualInvalidated += (_, e) =>
+        {
+            _overlay?.Invalidate();
+            // 历史/换页变化 → 撤销/重做按钮可用性（事件可能来自墨迹线程，统一封送 UI）
+            if (e.Reason is InvalidateReason.HistoryChanged or InvalidateReason.PageSwitched
+                && !_app.Dispatcher.HasShutdownStarted)
+                _app.Dispatcher.BeginInvoke(DispatcherPriority.Background,
+                    new Action(() => _toolbar?.RefreshHistoryButtons()));
+        };
         _svc.Eraser.GhostFrame += (_, _) => _overlay?.Invalidate();
         // 跨屏 DPI 变化 → 引导覆盖重对位（原独立引导窗口 DpiChanged 的等价承接）：
         // 舞台自身几何由其 DpiChanged 处理、元素 ScreenLeft/Top 经 LocationChanged 自动重同步，
