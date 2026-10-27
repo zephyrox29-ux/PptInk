@@ -21,6 +21,11 @@ public sealed class PresentationDetector : IDisposable
     public bool ComHealthy => _com.IsHealthy;
     public bool WinEventHealthy => _winEvent.IsHealthy;
 
+    /// <summary>最近一次 COM 页码查询是否成功（由编排器轮询回写）。
+    /// COM 事件通道失效但查询可用时仍以 COM 为准；连查询都失败才让 WinEvent 的
+    /// 方向推算法接管 —— 否则「COM 健康」会把唯一可用的兜底也静默掉。</summary>
+    public bool ComPageReadOk { get; set; } = true;
+
     public event EventHandler<ShowStartedEvent>? PresentationStarted;
     public event EventHandler<SlideChangedEvent>? SlideChanged;
     public event EventHandler? PresentationEnded;
@@ -97,9 +102,9 @@ public sealed class PresentationDetector : IDisposable
     {
 lock (_gate)
             {
-                // COM 健康时以 COM 页码为准；COM 已断开/不可用时必须放行 WinEvent
-                // 的兜底计数，否则 _activeSource 里残留的 "COM:..." 会永久静默兜底翻页。
-                if (!_showActive || (_com.IsHealthy && _activeSource.StartsWith("COM", StringComparison.Ordinal))) return;
+                // COM 健康且页码查询可用时以 COM 为准；COM 已断开或查不到页码时必须放行
+                // WinEvent 的兜底计数，否则 _activeSource 里残留的 "COM:..." 会永久静默兜底翻页。
+                if (!_showActive || (_com.IsHealthy && ComPageReadOk && _activeSource.StartsWith("COM", StringComparison.Ordinal))) return;
                 _lastEventAt = DateTime.UtcNow;
             }
         SlideChanged?.Invoke(this, e);

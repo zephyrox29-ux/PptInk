@@ -75,7 +75,6 @@ public sealed partial class Toolbar
         _holdOrigin = PositionOf(e);             // 固定舞台坐标
         _holdWindowOrigin = new Point(Left, Top);
         _dragging = false;
-        _holdTimer.Start();
         AnimationKit.GlideCancel(this);          // 抓取时释放吸附动画对位置的持有
         if (_gripVisual is not null)
             _gripVisual.SetResourceReference(Border.BackgroundProperty, "ItemSelectedBrush");
@@ -94,7 +93,6 @@ public sealed partial class Toolbar
         if (!_dragging && Math.Abs(dx) + Math.Abs(dy) > 6)
         {
             _dragging = true;
-            _holdTimer.Stop();
         }
         if (_dragging)
         {
@@ -109,7 +107,6 @@ public sealed partial class Toolbar
     {
         e.Handled = true;
         if (_gripSource == 0 || SourceOf(e) != _gripSource) return;
-        _holdTimer.Stop();
         bool wasDragging = _dragging;
         _dragging = false;
         _gripSource = 0; // 先清会话所有权，释放 Capture 引发 LostCapture 时不重入取消逻辑
@@ -124,6 +121,11 @@ public sealed partial class Toolbar
             _svc.Config.ToolbarDockY = Top;
             _svc.Config.Save();
             NotifyGeometryChanged();
+        }
+        else
+        {
+            // 轻触（位移 ≤6px）＝ 收纳为胶囊；拖动优先，绝不会因为想拖动而被误收纳。
+            CollapseToCapsule();
         }
     }
 
@@ -165,7 +167,6 @@ public sealed partial class Toolbar
     private void CancelGripGestureIfCaptureLost()
     {
         if (_gripSource == 0) return;
-        _holdTimer.Stop();
         _gripSource = 0;
         _dragging = false;
         if (_gripVisual is not null) _gripVisual.Background = Brushes.Transparent;

@@ -14,11 +14,13 @@ public partial class App : Application
     private AppServices? _services;
     private readonly bool _silentStart;
     private readonly bool _portable;
+    private readonly bool _openSettings;
 
-    public App(bool silentStart = false, bool portable = false)
+    public App(bool silentStart = false, bool portable = false, bool openSettings = false)
     {
         _silentStart = silentStart;
         _portable = portable;
+        _openSettings = openSettings;
         // 后台静默目标：关闭 WPF 默认的渲染线程忙等待功耗优化项干扰，
         // 并在异常时不弹窗（课堂场景）
         DispatcherUnhandledException += (_, e) =>
@@ -79,8 +81,14 @@ public partial class App : Application
             // 4) 状态机 → UI 唤起/收回（同样异步：相位流转可能来自线程池恢复计时器）
             svc.StateMachine.PhaseChanged += (_, phase) => Dispatcher.BeginInvoke(() => svc.UiOrchestrator.ApplyPhase(phase));
 
-            // 5) 托盘（可选隐藏）
-            svc.Tray.Initialize(hideByDefault: AppConfig.Current.HideTrayIcon);
+            // 5) 托盘（启动即显示：托盘是设置/导出/退出的唯一常规入口，绝不静默隐藏）
+            //    历史配置里的"隐藏"在此复位 —— 否则设置页显示"已隐藏"、托盘实际可见，两者矛盾。
+            if (AppConfig.Current.HideTrayIcon)
+            {
+                AppConfig.Current.HideTrayIcon = false;
+                AppConfig.Current.Save();
+            }
+            svc.Tray.Initialize();
 
             // 6) 启动检测（COM 主通道 + WinEvent 兜底，零轮询）
             svc.Detector.Start();
@@ -88,6 +96,10 @@ public partial class App : Application
             // v1.1.1 取证：启动环境摘要一行进日志（版本/OS/.NET/显示器数/放映屏口径/档案/输入档）
             try { svc.Log.Info(Core.DiagnosticsExporter.EnvironmentSummary()); } catch { }
             svc.Log.Info("PptInk 已驻留（S0 后台静默）");
+
+            // 7) --settings：直接打开设置中心（不依赖托盘 —— 托盘被隐藏 / 被系统收纳时的恢复入口）
+            if (_openSettings)
+                Dispatcher.BeginInvoke(new Action(() => svc.UiOrchestrator.OpenSettings()));
         }
         catch (Exception ex)
         {

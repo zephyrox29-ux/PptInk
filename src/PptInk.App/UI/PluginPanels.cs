@@ -551,9 +551,10 @@ internal sealed class QuickPluginElement : StageElement
             list.Children.Add(empty);
         }
 
+        int pluginCount = manager.Loaded.Count(manager.IsEnabled);
         var heading = new TextBlock
         {
-            Text = "组件",
+            Text = $"组件（{pluginCount}）",
             FontSize = 13.5,
             FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(5, 2, 5, 7),
@@ -587,12 +588,17 @@ internal sealed class QuickPluginElement : StageElement
         });
         Content = shell;
 
-        // 快捷组件面板由工具栏按钮唤起，因此贴着触发按钮浮出，不再固定堵在右下角。
+        // 快捷组件面板由工具栏按钮唤起，贴着触发按钮浮出。
+        // v1.1.2 真机修复：原实现用 DesiredSize 反推高度，ScrollViewer 的期望高度在首次
+        // 测量里可能只剩一行 → 面板被压成「只显示一个插件」。改为按条目数显式计算，
+        // 标题同时带上数量，一眼能确认实际加载了几个。
         double availableWidth = Math.Max(120, show.Width - 16);
-        Width = Math.Min(300, availableWidth);
-        Measure(new Size(Width, Math.Max(160, show.Height - 32)));
-        double panelWidth = Math.Min(Math.Max(DesiredSize.Width, Math.Min(220, availableWidth)), availableWidth);
-        double panelHeight = Math.Min(Math.Max(DesiredSize.Height, 80), Math.Max(120, show.Height * 0.52));
+        const double rowH = 52, headingH = 34, chrome = 16;
+        int rows = Math.Max(1, list.Children.Count);
+        double panelWidth = Math.Min(300, availableWidth);
+        double contentH = headingH + Math.Min(rows, 8) * rowH + chrome;
+        double panelHeight = Math.Min(Math.Max(contentH, 120), Math.Max(160, show.Height * 0.62));
+        scroll.MaxHeight = Math.Max(60, panelHeight - headingH - chrome);
         Width = panelWidth;
         Height = panelHeight;
         var slotAnchor = anchor ?? new Rect(show.Left + show.Width / 2, show.Top + show.Height / 2, 1, 1);

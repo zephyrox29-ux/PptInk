@@ -24,6 +24,8 @@ Windows 课堂放映用的 PPT 手写批注工具。.NET 8 + WPF，x64。
 - 工具栏支持缩放（70%–160%）、三套图标主题与图标下文字开关；中央槽放不下时自动切换为
   纯图标按钮，保证「结束放映」「插件」始终可达。
 - 新手引导覆盖批注、荧光笔、擦除、翻页、结束放映、AI、插件、收纳与撤销；托盘菜单可随时重播。
+- 托盘图标被系统折叠、或在设置里临时隐藏时：**再次双击程序图标即可唤回**；也可以运行
+  `PptInk.exe --settings` 直接打开设置（不依赖托盘）。启动时托盘始终可见，不会永久丢失。
 - 不启用 AI 时书写、擦除、翻页等全部核心功能不受影响。
 - 翻页笔按键失灵时，可在设置 → 行为中保持「音量/亮度键翻页」开启：放映中音量上/下
   或媒体上/下一曲会翻页，亮度键通过 HID Consumer Control 兜底；不需要可关闭。
@@ -34,6 +36,20 @@ Windows 课堂放映用的 PPT 手写批注工具。.NET 8 + WPF，x64。
 ## 构建
 
 需要 .NET 8 SDK。
+
+最省事的一键编译（restore + build + 测试，失败即非零退出）：
+
+```powershell
+pwsh ./scripts/build-latest.ps1               # Windows
+pwsh ./scripts/build-latest.ps1 -SkipTests    # 只编译
+pwsh ./scripts/build-latest.ps1 -Portable     # 编译后直接打便携包
+```
+
+```bash
+./scripts/build-latest.sh                     # Linux / macOS 交叉编译
+```
+
+手动构建：
 
 ```
 dotnet build PptInk.sln -c Release

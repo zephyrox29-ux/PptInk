@@ -183,9 +183,15 @@ public sealed partial class UiOrchestrator
             int page, pages;
             try { (page, pages) = await probe; }
             catch { return; }
-            if (page <= 0) return;             // COM 不可用：不动徽标（保留事件/推算通道的值）
+            if (page <= 0) { _comPageReadOk = false; return; }   // COM 查询不可用：翻页键改由方向推算兜底
+            _comPageReadOk = true;
             if (page == _lastBadgePage && pages == _lastBadgeTotal) return;
             _lastBadgePage = page; _lastBadgeTotal = pages;
+            // v1.1.2 真机回归（「上一页笔迹仍停留」）：权威页码直接对齐墨迹层，不再只依赖
+            // 状态机事件链。实测存在「COM 事件订阅失效但查询仍可用」的环境 —— 徽标已经变了、
+            // 墨迹却留在旧页。SwitchPage 幂等（同页直接返回），并触发整页重合成。
+            if (page != _svc.InkEngine.CurrentSlideIndex)
+                _svc.InkEngine.SwitchPage(page);
             await _app.Dispatcher.InvokeAsync(() => UpdatePageIslands(page, pages));
             // 审查修复：轮询兜底原先只刷徽标、不切墨迹页 —— COM 事件订阅失效但查询可用的环境下，
             // 老师翻页后页码显示变了、墨迹却留在旧页。权威读数送状态机统一驱动切页/徽标/收浮岛
@@ -234,7 +240,7 @@ public sealed partial class UiOrchestrator
         {
             bool want = _svc.Config.PresenterForwardEnabled &&
                         _svc.StateMachine.Phase == AppPhase.S1Active;
-            if (want) PresenterForwarder.Install(f => _ = AdvanceSlide(f));
+            if (want) PresenterForwarder.Install(f => _ = AdvanceSlide(f), OnForeignPageKey);
             else PresenterForwarder.UninstallAll();
         });
     }
@@ -242,7 +248,18 @@ public sealed partial class UiOrchestrator
     private void InstallPresenterForward()
     {
         if (_svc.Config.PresenterForwardEnabled)
-            PresenterForwarder.Install(f => _ = AdvanceSlide(f));
+            PresenterForwarder.Install(f => _ = AdvanceSlide(f), OnForeignPageKey);
+    }
+
+    /// <summary>最近一次 COM 页码查询是否成功（false = 只能靠方向推算）。</summary>
+    private bool _comPageReadOk = true;
+
+    /// <summary>焦点在 PPT 时按了翻页键（钩子已放行）：先复核权威页码；COM 连查询都读不到时，
+    /// 再用方向推算兜底。这样 COM 事件订阅失效、甚至 COM 查询失效，墨迹都不会留在旧页。</summary>
+    private void OnForeignPageKey(bool forward)
+    {
+        if (!_comPageReadOk) _svc.Detector.NotifyManualAdvance(forward);
+        _ = PollPageBadgeAsync();
     }
 
     /// <summary>切换"严格手掌抑制"（托盘菜单，v0.3.1 语义更新：原「仅指尖书写」）：

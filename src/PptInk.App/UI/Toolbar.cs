@@ -35,7 +35,6 @@ public sealed partial class Toolbar : StageElement
     private readonly AppServices _svc;
     private readonly Dictionary<string, Button> _buttons = new();
     private readonly TranslateTransform _slide = new();
-    private readonly DispatcherTimer _holdTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private Point _holdOrigin;                 // 屏幕/舞台固定坐标，不随工具栏移动
     private Point _holdWindowOrigin;           // 按下瞬间工具栏位置，Move 用绝对增量计算
     private Border? _gripVisual;
@@ -111,17 +110,8 @@ public sealed partial class Toolbar : StageElement
         RefreshAiBadge();   // 持久化开启 AI 时，启动即点亮（开关状态与工具栏视觉一致性）
         RenderTransform = _slide;
 
-        // 手柄（拖动 + 长按收纳为屏幕胶囊）
-        _holdTimer.Tick += (_, _) =>
-        {
-            _holdTimer.Stop();
-            if (!_dragging && _gripSource != 0)
-            {
-                _gripSource = 0;
-                ReleaseGestureCapture(_gripVisual, ref _gripTouchCapture, ref _gripStylusCapture, ref _gripMouseCapture);
-                CollapseToCapsule();
-            }
-        };
+        // 手柄：轻触（未发生拖动）收纳为屏幕胶囊；拖动仍然优先（超过 6px 阈值即改判拖动）。
+        // v1.1.2 真机反馈：原「长按 600ms」既拖慢了收纳，也容易在长按期间误触发拖动判定。
 
         // 胶囊交互（v0.2.0）：点按展开 / 拖动 + 松手吸附最近边缘。
         _capsuleRoot.PreviewMouseLeftButtonDown += OnCapsuleDown;

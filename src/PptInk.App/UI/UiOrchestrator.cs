@@ -47,7 +47,7 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     //    页码徽标将永远停在初值。500ms 轮询读权威页码（COM 读取走后台线程，单次 <1ms）——
     //    事件通道可用时轮询只是静默校准；不可用时它是唯一更新源。
     //    v0.1.5：2s → 500ms（用户实测「页数显示不实时」，翻页后徽标近实时跟随）。 ——
-    private readonly DispatcherTimer _pagePoll = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private readonly DispatcherTimer _pagePoll = new() { Interval = TimeSpan.FromMilliseconds(300) };
     private int _lastBadgePage = -1, _lastBadgeTotal = -1;
     private bool _polling;
 
@@ -631,8 +631,22 @@ if (_svc.StateMachine.Phase == AppPhase.S0Background)
                         _svc.InkEngine.SwitchPage(1);
                         _lastBadgePage = -1;
                         _lastBadgeTotal = -1;
+                        // 显式把页码岛置回「第 1 页 / 无放映」：COM 此时读不到页码，
+                        // 轮询不会更新徽标 → 原先会一直显示上一场 PPT 的最后页码。
+                        UpdatePageIslands(1, 0);
                         _ = PollPageBadgeAsync();   // 手动唤起也校准一次页码（可能已有放映在进行）
                     }
+        });
+    }
+
+    /// <summary>单实例管道 show-tray-menu：恢复托盘图标 + 唤起工具栏。
+    /// 托盘被「隐藏托盘图标」收起后，再次双击程序图标是唯一能拿回控制面的路径。</summary>
+    public void ShowTrayAndActivate()
+    {
+        _app.Dispatcher.Invoke(() =>
+        {
+            _svc.Tray.Show();
+            ForceActivate();   // 同线程 Invoke 直接执行，不会排队死锁
         });
     }
 
@@ -687,16 +701,26 @@ if (_svc.StateMachine.Phase == AppPhase.S0Background)
     {
         _app.Dispatcher.Invoke(() =>
         {
-            HideAllPopovers();   // 弹出型浮岛让位给模态感更强的设置中心
-            if (_settings is null || !_settings.IsLoaded)
+            // 设置窗构造涉及整页 XAML/字体/主题资源：任何一步异常都不能静默吞掉
+            //（否则表现就是"点了设置没反应"，用户完全无从判断）。
+            try
             {
-                _settings = new SettingsWindow(_svc);
-                _settings.Closed += (_, _) => _settings = null;
-                _settings.Show();
+                HideAllPopovers();   // 弹出型浮岛让位给模态感更强的设置中心
+                if (_settings is null || !_settings.IsLoaded)
+                {
+                    _settings = new SettingsWindow(_svc);
+                    _settings.Closed += (_, _) => _settings = null;
+                    _settings.Show();
+                }
+                else
+                {
+                    _settings.Activate();
+                }
             }
-            else
+            catch (Exception ex)
             {
-                _settings.Activate();
+                _svc.Log.Error(ex, "打开设置中心失败");
+                Toast.Show("设置窗口打开失败，详情已写入日志（托盘 → 导出诊断包）。");
             }
         });
     }

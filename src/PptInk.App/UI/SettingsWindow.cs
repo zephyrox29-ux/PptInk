@@ -1676,8 +1676,16 @@ public sealed class SettingsWindow : Window
                 if (v) _svc.AutoStart.EnsureRegistered(silent: true); else _svc.AutoStart.Unregister();
             }));
         integList.Children.Add(RowDivider());
-        integList.Children.Add(SwitchRow("显示托盘图标", "改完要重启才生效。", !cfg.HideTrayIcon,
-            v => { cfg.HideTrayIcon = !v; cfg.Save(); }));
+        integList.Children.Add(SwitchRow("显示托盘图标",
+            "立即生效。隐藏后托盘暂时收起；再次双击程序图标即可唤回（托盘是设置与退出的入口，不会永久丢失）。",
+            !cfg.HideTrayIcon,
+            v =>
+            {
+                cfg.HideTrayIcon = !v;
+                cfg.Save();
+                // 立即生效，不再"改完要重启"；启动时始终显示托盘，配置只影响当前会话
+                if (v) _svc.Tray.Show(); else _svc.Tray.Hide();
+            }));
         integList.Children.Add(RowDivider());
         // v0.4.0 调试模式：策略各层数据可视化（面向售后定位与调参，默认关闭）
         integList.Children.Add(SwitchRow("调试模式（诊断面板）", "角落常驻诊断信息：输入通道、压感、报点率、FPS。触摸时画出接触矩形（绿=接收，红=判为手掌）。", cfg.DebugMode,

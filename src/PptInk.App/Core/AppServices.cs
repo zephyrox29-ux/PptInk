@@ -170,9 +170,15 @@ public sealed class AppServices
                     string? line;
                     try { line = await reader.ReadLineAsync(readCts.Token); }
                     catch (OperationCanceledException) when (!token.IsCancellationRequested) { continue; }
-                    if (line is not null && line.Contains("show-tray-menu", StringComparison.OrdinalIgnoreCase) &&
-                        !token.IsCancellationRequested)
-                        UiOrchestrator.ForceActivate();
+                    if (line is not null && !token.IsCancellationRequested)
+                    {
+                        // v1.1.2：托盘被隐藏后，再次双击程序图标是唯一的恢复入口；
+                        // --settings 则直接打开设置，彻底不依赖托盘。
+                        if (line.Contains("open-settings", StringComparison.OrdinalIgnoreCase))
+                            UiOrchestrator.OpenSettings();
+                        else if (line.Contains("show-tray-menu", StringComparison.OrdinalIgnoreCase))
+                            UiOrchestrator.ShowTrayAndActivate();
+                    }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
                 catch (Exception ex)

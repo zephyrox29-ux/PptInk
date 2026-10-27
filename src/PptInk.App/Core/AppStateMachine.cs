@@ -82,15 +82,24 @@ public sealed class AppStateMachine
     public void OnSlideChanged(Detection.SlideChangedEvent ev)
     {
         int? slide = null;
+        bool noSession;
         lock (_gate)
         {
             _session?.UpdatePosition(ev.SlideIndex, ev.TotalSlides);
+            noSession = _session is null;
             if (Phase == AppPhase.S1Active) slide = ApplySlideIndex(ev.SlideIndex);
         }
         if (slide is { } idx)
         {
             AppLog.Instance.Info($"翻页：第 {idx}/{ev.TotalSlides} 页（来源 {ev.Source}）");
             SlideIndexChanged?.Invoke(this, idx);
+        }
+        else if (noSession)
+        {
+            // v1.1.2 防御：权威页码（COM 轮询）已经读到新页，但 Start 事件漏报导致会话缺失。
+            // 原实现此时静默返回 —— 徽标变了、墨迹留在旧页。这里仍派发切页。
+            AppLog.Instance.Warn($"翻页事件缺少会话（来源 {ev.Source}，第 {ev.SlideIndex} 页），按页码直接切页");
+            SlideIndexChanged?.Invoke(this, ev.SlideIndex);
         }
     }
 

@@ -66,7 +66,7 @@ public sealed class ShapeAssistBubble : StageElement
             Content = text,
             FontSize = primary ? 13 : 12,
             FontWeight = primary ? FontWeights.Medium : FontWeights.Normal,
-            Height = 44,
+            Height = 38,
             Padding = new Thickness(primary ? 16 : 10, 0, primary ? 16 : 10, 0),
             BorderThickness = new Thickness(0),
             Cursor = Cursors.Hand,

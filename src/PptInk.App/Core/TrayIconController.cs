@@ -101,9 +101,13 @@ public sealed class TrayIconController : IDisposable
         };
     }
 
-    public void Initialize(bool hideByDefault)
+    /// <summary>启动即显示。托盘是设置 / 导出 / 退出的唯一常规入口 —— 实测把设置里的
+    /// 「显示托盘图标」关掉再重启，托盘不再出现、设置也再进不去（完全自锁）。
+    /// hideByDefault 只为兼容旧调用保留，不再隐藏；用户主动隐藏后，再次双击程序图标
+    /// 会通过单实例管道 show-tray-menu 唤回。</summary>
+    public void Initialize(bool hideByDefault = false)
     {
-        if (!hideByDefault) Show();
+        Show();
     }
 
     public void Show()

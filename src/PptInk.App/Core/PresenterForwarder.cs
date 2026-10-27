@@ -18,24 +18,27 @@ namespace PptInk.Core;
 public sealed class PresenterForwarder : IDisposable
 {
     private readonly Action<bool> _advance;       // true = 下一页
+    private readonly Action<bool>? _foreignAdvance;   // 焦点在 PPT：仅作页码复核信号，不拦截按键
     private readonly Dispatcher _dispatcher;
     private IntPtr _hook;
     private readonly HookProc _proc;              // 防 GC（低级钩子回调委托被回收 = 进程级事故）
 
     private static PresenterForwarder? _active;   // 低级钩子进程内只装一条
 
-    private PresenterForwarder(Action<bool> advance, Dispatcher dispatcher)
+    private PresenterForwarder(Action<bool> advance, Action<bool>? foreignAdvance, Dispatcher dispatcher)
     {
         _advance = advance;
+        _foreignAdvance = foreignAdvance;
         _dispatcher = dispatcher;
         _proc = LowLevelHookProc;
     }
 
-    /// <summary>安装（幂等）。返回转发器实例；S1 进入时调用。</summary>
-    public static PresenterForwarder Install(Action<bool> advance)
+    /// <summary>安装（幂等）。返回转发器实例；S1 进入时调用。
+    /// foreignAdvance：焦点在 PPT、按键被放行时的通知（COM 事件失效时靠它触发页码复核）。</summary>
+    public static PresenterForwarder Install(Action<bool> advance, Action<bool>? foreignAdvance = null)
     {
         if (_active is not null) return _active;
-        var f = new PresenterForwarder(advance, Dispatcher.CurrentDispatcher);
+        var f = new PresenterForwarder(advance, foreignAdvance, Dispatcher.CurrentDispatcher);
         _active = f;
         f._hook = SetWindowsHookExW(WH_KEYBOARD_LL, f._proc, GetModuleHandleW(null), 0);
         return f;
@@ -117,7 +120,12 @@ public sealed class PresenterForwarder : IDisposable
         {
             _ = GetWindowThreadProcessId(fg, out uint fgPid);
             if (fgPid != GetCurrentProcessId())
+            {
+                // 焦点在 PPT / 其他程序：不拦截（让 PPT 自己翻），但把这次按键当作
+                // 「页码需要复核」的信号。COM 事件订阅失效时，这是唯一的实时翻页线索。
+                NotifyForeignPageKey(forward.Value);
                 return CallNextHookEx(_hook, code, wParam, lParam);
+            }
         }
         if (fg == IntPtr.Zero && !mediaKey)
             return CallNextHookEx(_hook, code, wParam, lParam);
@@ -143,6 +151,27 @@ public sealed class PresenterForwarder : IDisposable
         bool fwd = forward.Value;
         _dispatcher.BeginInvoke(() => _advance(fwd), DispatcherPriority.Input);
         return (IntPtr)1;
+    }
+
+    /// <summary>延迟 180ms 通知（等 PPT 完成翻页）。用 DispatcherTimer 而非阻塞钩子回调 ——
+    /// 低级键盘钩子有 300ms 超时硬限制，回调里绝不做等待。</summary>
+    private void NotifyForeignPageKey(bool forward)
+    {
+        if (_foreignAdvance is null) return;
+        try
+        {
+            var timer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher)
+            {
+                Interval = TimeSpan.FromMilliseconds(180),
+            };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                try { _foreignAdvance(forward); } catch { }
+            };
+            timer.Start();
+        }
+        catch { /* Dispatcher 竞态下通知失败无害 */ }
     }
 
     #region Win32

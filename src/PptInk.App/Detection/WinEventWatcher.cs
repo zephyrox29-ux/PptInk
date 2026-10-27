@@ -65,9 +65,23 @@ public sealed class WinEventWatcher : IPresentationChannel
     private void OnObjectShow(IntPtr hook, uint evt, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
         if (idObject != 0) return;
-        // SHOW 事件只关心放映类窗口的出现（前台切换可能尚未发生）
         var cls = GetClassName(hwnd);
-        if (SlideShowClasses.Contains(cls)) HandleWindowEvent(hwnd);
+        if (!SlideShowClasses.Contains(cls)) return;
+
+        // v1.1.2 真机回归：打开 PowerPoint 的瞬间，程序会预创建 screenClass 放映窗口并
+        // 短暂 SHOW —— 立刻判定就会把「刚打开 PPT」误当成「开始放映」，工具栏闪一下。
+        // 延迟 150ms 复核：窗口此刻仍存在、可见、且有正常尺寸，才认定为开始放映。
+        _ = System.Threading.Tasks.Task.Delay(150).ContinueWith(_ =>
+        {
+            try
+            {
+                if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) return;
+                if (!GetWindowRect(hwnd, out var r)) return;
+                if (r.Right - r.Left < 200 || r.Bottom - r.Top < 150) return;
+                HandleWindowEvent(hwnd);
+            }
+            catch { /* 复核期间销毁：不是放映 */ }
+        }, System.Threading.Tasks.TaskScheduler.Default);
     }
 
     private void HandleWindowEvent(IntPtr hwnd)
@@ -77,6 +91,8 @@ public sealed class WinEventWatcher : IPresentationChannel
 
         if (SlideShowClasses.Contains(cls))
         {
+            // 隐藏的预创建放映窗口不算开始放映（防「打开 PPT 工具栏闪一下」）
+            if (!IsWindowVisible(hwnd)) return;
             if (_currentShowHwnd == hwnd) return; // 放映中窗口内部焦点抖动，忽略
             _currentShowHwnd = hwnd;
             _estimatedSlide = 1;
@@ -145,6 +161,15 @@ public sealed class WinEventWatcher : IPresentationChannel
 
     [DllImport("user32.dll")]
     private static extern bool IsWindow(IntPtr hwnd);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hwnd);
