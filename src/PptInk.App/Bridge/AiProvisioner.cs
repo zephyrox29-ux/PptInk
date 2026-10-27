@@ -370,7 +370,10 @@ internal static class AiProvisioner
         var script = Path.Combine(bridgeDir, "ink_bridge.py");
         var bundled = Path.Combine(bridgeDir, "python", "python.exe");
 
-        for (int round = 1; round <= 10 && !ct.IsCancellationRequested; round++)
+        // v1.1.2：轮次 10 → 6。每轮至少消耗一次 Python/NumPy/import 探测 + 桥握手，
+// 10 轮在失败场景下会让用户等上好几分钟；6 轮已覆盖全部修复手段（补脚本/_pth/
+// NumPy/重建运行时/系统 Python 兜底），且现在自检可随时取消。
+        for (int round = 1; round <= 6 && !ct.IsCancellationRequested; round++)
         {
             progress?.Report(round == 1 ? "正在检测 AI 运行环境……" : $"正在复检（第 {round} 轮）……");
 

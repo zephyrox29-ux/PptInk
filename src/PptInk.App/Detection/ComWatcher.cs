@@ -207,7 +207,9 @@ public sealed class ComWatcher : IPresentationChannel
                 int pos = 1, total = 0;
                 try { pos = (int)view.CurrentShowPosition; } catch { }
                 try { total = (int)view.Presentation.Slides.Count; } catch { }
-                Started?.Invoke(this, new ShowStartedEvent(pos, total, Name));
+                string path = "";
+                try { path = (string?)view.Presentation.FullName ?? ""; } catch { }
+                Started?.Invoke(this, new ShowStartedEvent(pos, total, Name, path));
             }
         }
         catch { /* 补报失败不影响主流程 */ }
@@ -218,7 +220,9 @@ public sealed class ComWatcher : IPresentationChannel
         int pos = 1, total = 0;
         try { pos = (int)window.View.CurrentShowPosition; } catch { }
         try { total = (int)window.Presentation.Slides.Count; } catch { }
-        Started?.Invoke(this, new ShowStartedEvent(pos, total, Name));
+        string path = "";
+        try { path = (string?)window.Presentation.FullName ?? ""; } catch { }
+        Started?.Invoke(this, new ShowStartedEvent(pos, total, Name, path));
     }
 
     private void OnSlideShowNextSlide(dynamic window)

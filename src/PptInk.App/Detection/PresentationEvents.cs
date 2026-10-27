@@ -4,7 +4,9 @@ namespace PptInk.Detection;
 /// <param name="SlideIndex">1-based 幻灯片索引。</param>
 /// <param name="TotalSlides">总页数（兜底通道可为 0，表示未知）。</param>
 /// <param name="Source">来源："COM:PowerPoint" / "COM:WPS" / "WinEvent:screenClass"。</param>
-public sealed record ShowStartedEvent(int SlideIndex, int TotalSlides, string Source);
+/// <param name="DocumentPath">当前演示文稿文件全路径（COM 通道提供；兜底通道为空）。
+/// 用于「换 PPT 必须换会话」的身份判定 —— 页码/板书绝不跨文件串。</param>
+public sealed record ShowStartedEvent(int SlideIndex, int TotalSlides, string Source, string DocumentPath = "");
 
 /// <summary>翻页事件。</summary>
 public sealed record SlideChangedEvent(int SlideIndex, int TotalSlides, string Source);

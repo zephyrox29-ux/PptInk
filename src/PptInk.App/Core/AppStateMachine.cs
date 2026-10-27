@@ -42,6 +42,9 @@ public sealed class AppStateMachine
 
     public event EventHandler<AppPhase>? PhaseChanged;
     public event EventHandler<int>? SlideIndexChanged;
+    /// <summary>放映中途检测到换了一个演示文稿文件（上一场 End 漏报时也能可靠识别）。
+    /// 订阅方据此清空旧板书/重置页码，保证「PPT 明确到文件，不串」。</summary>
+    public event EventHandler<string>? DocumentChanged;
 
     public AppStateMachine(int hysteresisMs = 500)
     {
@@ -53,11 +56,33 @@ public sealed class AppStateMachine
     {
         AppPhase? phase = null;
         int? slide = null;
+        string? newDocument = null;
         lock (_gate)
         {
-            if (Phase == AppPhase.S1Active)
+            if (Phase == AppPhase.S1Active && _session is { } activeSession)
             {
-                slide = ApplySlideIndex(ev.SlideIndex);
+                // v1.1.2：换 PPT 必须换会话。上一场 End 漏报时会停在 S1，若只 ApplySlideIndex
+                // 就会沿用旧文件的总页数/页码/板书 —— 这就是「PPT 串了」的根因。
+                bool sameDocument = string.IsNullOrEmpty(ev.DocumentPath)
+                    || string.IsNullOrEmpty(activeSession.DocumentPath)
+                    || string.Equals(activeSession.DocumentPath, ev.DocumentPath, StringComparison.OrdinalIgnoreCase);
+                // 兜底通道先建立会话（没有文件身份），COM 后到补报：用权威信息补全，
+                // 既不清板书，也把总页数/起始页换成真实值。
+                bool missingIdentity = string.IsNullOrEmpty(activeSession.DocumentPath)
+                    && !string.IsNullOrEmpty(ev.DocumentPath);
+                if (sameDocument && !missingIdentity)
+                {
+                    slide = ApplySlideIndex(ev.SlideIndex);
+                }
+                else
+                {
+                    _session = new ShowSession(ev.Source, ev.TotalSlides, ev.SlideIndex, ev.DocumentPath);
+                    if (!sameDocument) newDocument = ev.DocumentPath;   // 真换文件才清板书
+                    slide = ev.SlideIndex;   // 新会话起始页：必须显式派发，否则引擎停在旧页
+                    AppLog.Instance.Info(missingIdentity
+                        ? $"补全会话文件身份：{ev.DocumentPath}（第 {ev.SlideIndex}/{ev.TotalSlides} 页）"
+                        : $"检测到新课件：{ev.DocumentPath}（第 {ev.SlideIndex}/{ev.TotalSlides} 页）");
+                }
             }
             else if (Phase == AppPhase.S2Yield && _session is { } yieldSession)
             {
@@ -68,13 +93,15 @@ public sealed class AppStateMachine
             }
             else
             {
-                _session = new ShowSession(ev.Source, ev.TotalSlides, ev.SlideIndex);
+                _session = new ShowSession(ev.Source, ev.TotalSlides, ev.SlideIndex, ev.DocumentPath);
                 phase = TransitionTo(AppPhase.S1Active);
                 slide = ApplySlideIndex(ev.SlideIndex);
                 // v1.1.1 取证日志：放映开始（来源通道 + 起始页）—— 无放映环境排障第一现场
                 AppLog.Instance.Info($"放映开始：来源 {ev.Source} 第 {ev.SlideIndex}/{ev.TotalSlides} 页");
             }
         }
+        // 先让订阅方清空旧板书，再由 SlideIndexChanged 把引擎切到新文件的起始页
+        if (newDocument is { } document) DocumentChanged?.Invoke(this, document);
         Fire(phase, slide);
     }
 
@@ -240,13 +267,16 @@ public sealed class AppStateMachine
 /// <summary>一次放映会话：来源通道、页码、总页数。</summary>
 public sealed class ShowSession
 {
-    public ShowSession(string source, int totalSlides, int slideIndex)
+    public ShowSession(string source, int totalSlides, int slideIndex, string documentPath = "")
     {
         Source = source; TotalSlides = totalSlides; CurrentSlide = slideIndex;
+        DocumentPath = documentPath ?? "";
         StartedAt = DateTime.Now;
     }
 
     public string Source { get; }        // "COM:PowerPoint" | "COM:WPS" | "WinEvent:screenClass"
+    /// <summary>当前演示文稿文件全路径（COM 通道提供；兜底通道为空）。会话身份的第一判据。</summary>
+    public string DocumentPath { get; }
     public DateTime StartedAt { get; }
     public int TotalSlides { get; private set; }
     public int CurrentSlide { get; internal set; }

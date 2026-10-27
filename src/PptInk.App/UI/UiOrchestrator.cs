@@ -89,6 +89,10 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
                 UpdatePageIslands(idx, svc.StateMachine.Session?.TotalSlides ?? 0);
             });
 
+        // 放映中途换了演示文稿文件（上一场 End 漏报也能识别）：清空旧板书，不跨文件串页。
+        svc.StateMachine.DocumentChanged += (_, path) =>
+            _app.Dispatcher.BeginInvoke(() => HandleDeckSwitch(path));
+
         // 引擎侧工具切换（清空后智能切回 / 插件请求）→ 工具栏高亮同步 + 收回浮岛
         svc.InkEngine.ToolChanged += tool => _app.Dispatcher.BeginInvoke(() =>
         {
@@ -516,6 +520,39 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
     }
 
     /// <summary>状态机相位 → UI 呈现。</summary>
+    /// <summary>换课件：先给导出机会，再清空旧板书。S1 进入与「放映中途换文件」共用同一路径，
+    /// 保证两种入口都不会把上一份 PPT 的板书/页码带到新文件。</summary>
+    private void HandleDeckSwitch(string? deckId)
+    {
+        if (string.IsNullOrEmpty(deckId)) return;
+        try
+        {
+            // 换课件会在 BeginPresentationSession 中清空旧页。自动导出关闭时
+            // 必须先给用户一个明确的导出机会，不能清完再发“请提前导出”的提示。
+            if (!_svc.Config.AutoExportOnExit &&
+                _svc.InkEngine.HasInk &&
+                !string.Equals(_svc.InkEngine.SessionIdentity, deckId, StringComparison.OrdinalIgnoreCase))
+            {
+                var choice = MessageBox.Show(
+                    "检测到换了课件。旧板书的批注会被清空，是否先导出旧板书？\n\n" +
+                    "选「是」：先导出到桌面「PptInk导出」再切换；选「否」：直接清空。",
+                    "融绘 · 换课件", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                if (choice == MessageBoxResult.Yes)
+                {
+                    var dir = _svc.InkEngine.ExportSessionSafe();
+                    if (dir is not null) Toast.Show($"旧板书已导出：{dir}");
+                }
+            }
+            bool discardedInk = _svc.InkEngine.BeginPresentationSession(deckId);
+            if (discardedInk && !_svc.Config.AutoExportOnExit)
+                Toast.Show("已切换课件：旧板书已清空。");
+        }
+        catch (Exception ex)
+        {
+            _svc.Log.Warn($"换课件处理失败：{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     public void ApplyPhase(AppPhase phase)
     {
         _app.Dispatcher.Invoke(() =>
@@ -530,27 +567,7 @@ public sealed partial class UiOrchestrator : IOnboardingTargets   // 接口列�
                     // v1.1.1：自动导出默认关闭 —— 换课件丢弃旧板书时提醒留存，避免
                     // 「以为有自动备份，实际退出即清」的静默数据丢失。
                     if (_svc.PptController.TryGetPresentationIdentity(out var deckId))
-                    {
-                        // 换课件会在 BeginPresentationSession 中清空旧页。自动导出关闭时
-                        // 必须先给用户一个明确的导出机会，不能清完再发“请提前导出”的提示。
-                        if (!_svc.Config.AutoExportOnExit &&
-                            _svc.InkEngine.HasInk &&
-                            !string.Equals(_svc.InkEngine.SessionIdentity, deckId, StringComparison.Ordinal))
-                        {
-                            var choice = MessageBox.Show(
-                                "检测到换了课件。旧板书的批注会被清空，是否先导出旧板书？\n\n" +
-                                "选「是」：先导出到桌面「PptInk导出」再切换；选「否」：直接清空。",
-                                "融绘 · 换课件", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                            if (choice == MessageBoxResult.Yes)
-                            {
-                                var dir = _svc.InkEngine.ExportSessionSafe();
-                                if (dir is not null) Toast.Show($"旧板书已导出：{dir}");
-                            }
-                        }
-                        bool discardedInk = _svc.InkEngine.BeginPresentationSession(deckId);
-                        if (discardedInk && !_svc.Config.AutoExportOnExit)
-                            Toast.Show("已切换课件：旧板书已清空。");
-                    }
+                        HandleDeckSwitch(deckId);
                     // 重要：放映开始/换课件/S2 恢复时，session.CurrentSlide 在 OnPresentationStart
                     // 中已经被赋成起始页，ApplySlideIndex 不会再产生“页码变化”事件。若不在这里
                     // 无条件对齐引擎页，引擎会停留在上一场/上次手动书写的页，板书写到不可见的

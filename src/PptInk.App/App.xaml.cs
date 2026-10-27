@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Controls;
 using PptInk.Core;
 using PptInk.Detection;
 using PptInk.UI.Theme;
@@ -21,6 +22,13 @@ public partial class App : Application
         _silentStart = silentStart;
         _portable = portable;
         _openSettings = openSettings;
+
+        // 纯触摸大屏（v1.1.2）：Windows 会把触摸“悬停”合成为鼠标悬停，ToolTip 会长期
+        // 挂在屏幕上（倒计时/随机点名/板中板等按钮的提示就是这样冒出来的）。
+        // 全局取消 ToolTipOpening：对所有 FrameworkElement 生效，不必改几十处 ToolTip
+        // 赋值，也不会漏掉插件或以后新增的控件；按钮点击/拖动完全不受影响。
+        EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.ToolTipOpeningEvent,
+            new ToolTipEventHandler((_, e) => e.Handled = true));
         // 后台静默目标：关闭 WPF 默认的渲染线程忙等待功耗优化项干扰，
         // 并在异常时不弹窗（课堂场景）
         DispatcherUnhandledException += (_, e) =>
@@ -60,7 +68,11 @@ public partial class App : Application
             Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnSystemPreferenceChanged;
 
             // 1) 注册当前用户自启（HKCU Run，无需管理员，静默 --minimized 参数）；
-            //    --portable 便携试用（zip 解压即跑）：不往试用机写常驻项
+            //    --portable 便携试用（zip 解压即跑）：不往试用机写常驻项。
+            //    v1.1.2：先清理旧版本残留的自启项（旧安装目录的 PptInk 值），只保留当前 exe；
+            //    便携模式也清理（只删不写），否则旧版仍会自启并抢先占用单实例。
+            int pruned = svc.AutoStart.PruneLegacyEntries();
+            if (pruned > 0) svc.Log.Info($"已清理 {pruned} 个旧版本自启项");
             if (!_portable)
                 svc.AutoStart.EnsureRegistered(silent: true);
 

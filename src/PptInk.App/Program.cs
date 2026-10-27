@@ -24,6 +24,10 @@ internal static class Program
         // 静默常驻进程：不给课堂弹任何系统级错误框
         SetErrorMode(ErrorModes.SEM_FAILCRITICALERRORS | ErrorModes.SEM_NOGPFAULTERRORBOX);
 
+        // v1.1.2：旧版本残留进程会先抢同名单实例互斥 → 新版直接退出（表现为「还是旧界面 /
+        // 新版打不开」）。启动时结束 exe 路径不同的同名进程，只保留最新版。
+        KillLegacyInstances();
+
         // 参数解析必须在单实例转发之前（已有实例分支也要知道是否请求打开设置）
         var silent = args.Contains("--minimized", StringComparer.OrdinalIgnoreCase)
                   || args.Contains("/silent", StringComparer.OrdinalIgnoreCase);
@@ -44,6 +48,41 @@ internal static class Program
         var app = new App(silentStart: silent, portable: portable, openSettings: openSettings);
         app.InitializeComponent();
         app.Run();
+    }
+
+    /// <summary>结束旧版本进程（v1.1.2）：同名 PptInk 但 exe 路径不是当前文件的实例。
+    /// 只处理同名 PptInk.exe，权限不足/进程已退出时静默跳过；绝不误杀当前版本的第二实例
+    /// （路径相同会被跳过，仍交给单实例管道处理）。</summary>
+    private static void KillLegacyInstances()
+    {
+        try
+        {
+            string? self = Environment.ProcessPath;
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName("PptInk"))
+            {
+                try
+                {
+                    if (p.Id == Environment.ProcessId) continue;
+                    string? path = null;
+                    try { path = p.MainModule?.FileName; } catch { }
+                    if (string.IsNullOrEmpty(path)) continue;
+                    if (!string.IsNullOrEmpty(self) &&
+                        string.Equals(path, self, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!string.Equals(System.IO.Path.GetFileName(path), "PptInk.exe", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    try
+                    {
+                        PptInk.Core.AppLog.Instance.Warn($"结束旧版本实例：{path}（PID {p.Id}）");
+                        p.Kill(entireProcessTree: true);
+                        p.WaitForExit(2000);
+                    }
+                    catch { }
+                }
+                catch { }
+                finally { p.Dispose(); }
+            }
+        }
+        catch { }
     }
 
     private static void TrySignalExistingInstance(bool openSettings)

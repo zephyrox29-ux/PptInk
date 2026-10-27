@@ -1196,6 +1196,7 @@ public sealed class SettingsWindow : Window
     // ══════════════════ 行为 ══════════════════
 
     private TextBlock? _aiStatus;
+    private CancellationTokenSource? _aiHealthCts;
 
     /// <summary>AI 状态行：把「检测中 / 定位到问题 / 正在修复 / 服务正常运行」直接写在卡片里，
     /// 成功失败都不弹错误框 —— 用户看到的是一条可执行的状态，而不是一串技术错误。</summary>
@@ -1207,20 +1208,36 @@ public sealed class SettingsWindow : Window
         if (TryFindResource(key) is Brush b) _aiStatus.Foreground = b;
     }
 
+    /// <summary>按钮在自检期间变身为「取消自检」：下载/解压可能持续数分钟，
+    /// 不能把用户锁在无法中断的等待里（原先自检期间按钮直接禁用）。</summary>
+    private void OnAiHealthButton(Button button)
+    {
+        if (_aiHealthCts is { } running) { running.Cancel(); return; }
+        _ = RunAiHealthCheckAsync(button);
+    }
+
     private async Task RunAiHealthCheckAsync(Button button)
     {
-        if (!button.IsEnabled) return;
-        button.IsEnabled = false;
+        var cts = new CancellationTokenSource();
+        _aiHealthCts = cts;
         var label = (button.Content as StackPanel)?.Children.OfType<TextBlock>().FirstOrDefault();
         void SetText(string t) { if (label is not null) label.Text = t; }
-        SetText("AI 自检中…");
+        SetText("取消自检");
         SetAiStatus("正在检测 AI 运行环境……", ok: false, busy: true);
         try
         {
             // 阶段文案由环境医生逐环节上报：检测 → 定位 → 修复 → 复检 → 就绪
-            var progress = new Progress<string>(msg => SetAiStatus(msg, ok: false, busy: true));
-            var result = await _svc.PythonBridge.CheckHealthAsync(default, progress, ConfirmAiNetworkAsync);
-            if (result.Ok)
+            var progress = new Progress<string>(msg =>
+            {
+                if (!cts.IsCancellationRequested) SetAiStatus(msg, ok: false, busy: true);
+            });
+            var result = await _svc.PythonBridge.CheckHealthAsync(cts.Token, progress, ConfirmAiNetworkAsync);
+            if (cts.IsCancellationRequested)
+            {
+                SetAiStatus("自检已取消，随时可以再点一次。", ok: false, busy: false);
+                SetText("快速检测 AI 功能");
+            }
+            else if (result.Ok)
             {
                 SetAiStatus("✓ " + result.Message, ok: true, busy: false);
                 SetText("AI 已就绪");
@@ -1235,6 +1252,11 @@ public sealed class SettingsWindow : Window
                     AppLog.Instance.Warn("AI 自检详情：" + Environment.NewLine + result.Detail);
             }
         }
+        catch (OperationCanceledException)
+        {
+            SetAiStatus("自检已取消，随时可以再点一次。", ok: false, busy: false);
+            SetText("快速检测 AI 功能");
+        }
         catch (Exception ex)
         {
             SetAiStatus("自检被中断，点一下重试即可。", ok: false, busy: false);
@@ -1243,7 +1265,8 @@ public sealed class SettingsWindow : Window
         }
         finally
         {
-            button.IsEnabled = true;
+            _aiHealthCts = null;
+            cts.Dispose();
         }
     }
 
@@ -1495,7 +1518,7 @@ public sealed class SettingsWindow : Window
             v => _svc.UiOrchestrator.SetAiPower(v, notify: false)));
         integList.Children.Add(RowDivider());
         Button? aiHealthButton = null;
-        aiHealthButton = ActionButton("快速检测 AI 功能", "IconCheck", () => _ = RunAiHealthCheckAsync(aiHealthButton!));
+        aiHealthButton = ActionButton("快速检测 AI 功能", "IconCheck", () => OnAiHealthButton(aiHealthButton!));
         integList.Children.Add(aiHealthButton);
 
         // 内联状态行（v1.1.2）：检测 → 定位 → 修复 → 复检 → 就绪，全过程写在卡片里，
