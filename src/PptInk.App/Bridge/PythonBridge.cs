@@ -295,14 +295,20 @@ public sealed class PythonBridge : IDisposable
     public sealed record HealthResult(bool Ok, string Message, string? Detail);
 
     public async Task<HealthResult> CheckHealthAsync(CancellationToken cancellationToken = default, IProgress<string>? progress = null,
-        Func<string, Task<bool>>? confirmNetwork = null)
+        Func<string, Task<bool>>? confirmNetwork = null, IProgress<AiProgress>? detailed = null)
     {
         var dir = BridgeDir;
-        progress?.Report("开始逐环节自检与自动修复……");
+        // 总超时 15 分钟：网络极慢/程序目录被锁时不能无限挂着（用户仍可随时手动取消）
+        using var overall = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        overall.CancelAfter(TimeSpan.FromMinutes(15));
         // v1.1.2：环境医生逐环节自检（脚本自愈 → Python → NumPy → 识别模块 → 握手 → 合成识别），
         // 任一环失败自动修复并全量复检，直到可用或穷尽修复手段。
-        var result = await AiProvisioner.EnsureUsableAsync(dir, progress, confirmNetwork, cancellationToken);
+        var result = await AiProvisioner.EnsureUsableAsync(dir, progress, confirmNetwork, overall.Token, detailed);
         if (result.Ok) _verifiedPython = result.PythonExe;   // 运行时与自检使用同一解释器
+        if (!result.Ok && !cancellationToken.IsCancellationRequested && overall.IsCancellationRequested)
+            return new HealthResult(false,
+                "自检超时（15 分钟）。通常是网络过慢或程序目录不可写；恢复网络后再点一次重试即可。",
+                result.Detail);
         return new HealthResult(result.Ok, result.Message, result.Detail);
     }
 

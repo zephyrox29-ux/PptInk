@@ -7,6 +7,7 @@ using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using PptInk.Bridge;
 using PptInk.Builtin;
 using PptInk.Core;
 using PptInk.Plugins;
@@ -1197,6 +1198,52 @@ public sealed class SettingsWindow : Window
 
     private TextBlock? _aiStatus;
     private CancellationTokenSource? _aiHealthCts;
+    private readonly Dictionary<AiStage, TextBlock> _aiStepRows = new();
+    private readonly Dictionary<AiStage, string> _aiStepLabels = new();
+    private ProgressBar? _aiProgressBar;
+
+    private static readonly (AiStage Stage, string Label)[] AiStepDefs =
+    {
+        (AiStage.Script, "桥接脚本"),
+        (AiStage.Python, "Python 运行时"),
+        (AiStage.Numpy, "NumPy"),
+        (AiStage.Recognizer, "识别模块"),
+        (AiStage.Handshake, "桥握手 / 识别"),
+    };
+
+    /// <summary>结构化进度：逐项更新「桥接脚本 / Python / NumPy / 识别模块 / 桥握手」，
+    /// 每项都有独立状态（进行中 / 通过 / 已修复 / 失败），失败时能一眼看出卡在哪一环。</summary>
+    private void UpdateAiProgress(AiProgress p)
+    {
+        if (_aiStepRows.TryGetValue(p.Stage, out var row))
+        {
+            string label = _aiStepLabels.TryGetValue(p.Stage, out var l) ? l : p.Stage.ToString();
+            string mark = p.State switch
+            {
+                AiStepState.Running => "◌",
+                AiStepState.Passed => "✓",
+                AiStepState.Repaired => "⟳",
+                AiStepState.Failed => "✕",
+                _ => "○",
+            };
+            row.Text = $"{mark} {label} · {p.Message}";
+            string key = p.State is AiStepState.Passed or AiStepState.Repaired
+                ? "AccentBrush"
+                : p.State == AiStepState.Failed ? "TextPrimaryBrush" : "TextSecondaryBrush";
+            if (TryFindResource(key) is Brush b) row.Foreground = b;
+        }
+        if (_aiProgressBar is not null) _aiProgressBar.Value = Math.Clamp(p.Percent, 0, 100);
+    }
+
+    private void ResetAiProgress()
+    {
+        if (_aiProgressBar is not null) _aiProgressBar.Value = 0;
+        foreach (var (stage, row) in _aiStepRows)
+        {
+            row.Text = $"○ {(_aiStepLabels.TryGetValue(stage, out var l) ? l : stage.ToString())}";
+            if (TryFindResource("TextSecondaryBrush") is Brush b) row.Foreground = b;
+        }
+    }
 
     /// <summary>AI 状态行：把「检测中 / 定位到问题 / 正在修复 / 服务正常运行」直接写在卡片里，
     /// 成功失败都不弹错误框 —— 用户看到的是一条可执行的状态，而不是一串技术错误。</summary>
@@ -1223,6 +1270,7 @@ public sealed class SettingsWindow : Window
         var label = (button.Content as StackPanel)?.Children.OfType<TextBlock>().FirstOrDefault();
         void SetText(string t) { if (label is not null) label.Text = t; }
         SetText("取消自检");
+        ResetAiProgress();
         SetAiStatus("正在检测 AI 运行环境……", ok: false, busy: true);
         try
         {
@@ -1231,7 +1279,11 @@ public sealed class SettingsWindow : Window
             {
                 if (!cts.IsCancellationRequested) SetAiStatus(msg, ok: false, busy: true);
             });
-            var result = await _svc.PythonBridge.CheckHealthAsync(cts.Token, progress, ConfirmAiNetworkAsync);
+            var detailed = new Progress<AiProgress>(p =>
+            {
+                if (!cts.IsCancellationRequested) UpdateAiProgress(p);
+            });
+            var result = await _svc.PythonBridge.CheckHealthAsync(cts.Token, progress, ConfirmAiNetworkAsync, detailed);
             if (cts.IsCancellationRequested)
             {
                 SetAiStatus("自检已取消，随时可以再点一次。", ok: false, busy: false);
@@ -1530,6 +1582,37 @@ public sealed class SettingsWindow : Window
         };
         _aiStatus.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondaryBrush");
         integList.Children.Add(_aiStatus);
+
+        // 结构化步骤列表（v1.1.2）：比一行滚动文本更能说明「卡在哪一环」
+        _aiStepRows.Clear();
+        _aiStepLabels.Clear();
+        var aiSteps = new StackPanel { Margin = new Thickness(4, 6, 12, 0) };
+        foreach (var (stage, label) in AiStepDefs)
+        {
+            var row = new TextBlock
+            {
+                Text = $"○ {label}",
+                FontSize = 11,
+                Margin = new Thickness(0, 2, 0, 0),
+                TextWrapping = TextWrapping.Wrap,
+            };
+            row.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondaryBrush");
+            aiSteps.Children.Add(row);
+            _aiStepRows[stage] = row;
+            _aiStepLabels[stage] = label;
+        }
+        integList.Children.Add(aiSteps);
+
+        _aiProgressBar = new ProgressBar
+        {
+            Minimum = 0, Maximum = 100, Value = 0, Height = 4,
+            Margin = new Thickness(4, 8, 12, 2),
+            IsIndeterminate = false,
+        };
+        // 主题化：默认 WPF 进度条在深色卡片上是亮白轨道，与其余控件割裂
+        _aiProgressBar.SetResourceReference(Control.ForegroundProperty, "AccentBrush");
+        _aiProgressBar.SetResourceReference(Control.BackgroundProperty, "PanelBorderBrush");
+        integList.Children.Add(_aiProgressBar);
 
         var aiHealthNote = new TextBlock
         {

@@ -353,12 +353,21 @@ internal static class AiProvisioner
     /// 每轮候选解释器与运行时 RestartProcess 保持一致（内置 python.exe 优先，其次 PATH 的 python）。
     /// </summary>
     public static async Task<Result> EnsureUsableAsync(string bridgeDir, IProgress<string>? progress,
-        Func<string, Task<bool>>? confirmNetwork, CancellationToken ct)
+        Func<string, Task<bool>>? confirmNetwork, CancellationToken ct, IProgress<AiProgress>? detailed = null)
     {
         var log = new List<string>();
         string? lastError = null;
-        var repairs = new HashSet<string>(StringComparer.Ordinal);
+        // 修复次数计数（不是「是否做过」）：网络瞬时失败时同一项允许重试一次，
+        // 但每种手段最多 2 次，避免死循环。
+        var attempts = new Dictionary<string, int>(StringComparer.Ordinal);
         bool? granted = null;
+
+        void Report(AiStage stage, AiStepState state, string message, int percent)
+        {
+            progress?.Report(message);
+            detailed?.Report(new AiProgress(stage, state, message, percent));
+        }
+
         async Task<bool> EnsureNetworkAllowed(string what)
         {
             if (granted is bool g) return g;
@@ -370,66 +379,100 @@ internal static class AiProvisioner
         var script = Path.Combine(bridgeDir, "ink_bridge.py");
         var bundled = Path.Combine(bridgeDir, "python", "python.exe");
 
-        // v1.1.2：轮次 10 → 6。每轮至少消耗一次 Python/NumPy/import 探测 + 桥握手，
-// 10 轮在失败场景下会让用户等上好几分钟；6 轮已覆盖全部修复手段（补脚本/_pth/
-// NumPy/重建运行时/系统 Python 兜底），且现在自检可随时取消。
         for (int round = 1; round <= 6 && !ct.IsCancellationRequested; round++)
         {
-            progress?.Report(round == 1 ? "正在检测 AI 运行环境……" : $"正在复检（第 {round} 轮）……");
+            Report(AiStage.Script, AiStepState.Running,
+                round == 1 ? "检查桥接脚本与运行环境…" : $"第 {round} 轮复检…", 5);
 
-            // v1.1.2：脚本缺失/被杀软隔离是最常见的「AI 彻底打不开」，先自愈再检测，
+            // 脚本缺失/被杀软隔离是最常见的「AI 彻底打不开」：先自愈再检测，
             // 不再直接返回"请重新生成便携包"这种用户无法执行的结论。
+            bool restored = false;
             if (!File.Exists(script) || new FileInfo(script).Length == 0)
-                TryRestoreBridgeScripts(bridgeDir, progress, log);
+                restored = TryRestoreBridgeScripts(bridgeDir, progress, log);
             if (!File.Exists(script))
+            {
+                Report(AiStage.Script, AiStepState.Failed,
+                    "桥接脚本缺失，且内置副本未能写入（程序目录不可写或被安全软件拦截）", 5);
                 return new Result(false,
                     "AI 桥接脚本缺失，且内置副本未能写入（通常是程序目录不可写或被安全软件拦截）。",
                     null, "预期位置：" + script);
+            }
+            Report(AiStage.Script, restored ? AiStepState.Repaired : AiStepState.Passed,
+                restored ? "已自动恢复缺失的桥文件" : "桥接脚本就绪", 10);
 
-            progress?.Report("正在检查 Python 运行时……");
+            Report(AiStage.Python, AiStepState.Running, "检查 Python 运行时…", 15);
             // 解释器优先级：内置优先，系统 Python 兜底。选中的解释器会写回运行时
-            // （PythonBridge._verifiedPython），保证「自检用谁，运行就用谁」——
-            // 不再出现"自检通过、运行时仍用坏内置"的错位。
+            // （PythonBridge._verifiedPython），保证「自检用谁，运行就用谁」。
             var candidates = new List<string>();
             if (File.Exists(bundled)) candidates.Add(bundled);
             if (!candidates.Contains("python")) candidates.Add("python");
 
             string? usable = null;
+            string pythonFailure = "";
             foreach (var exe in candidates)
             {
-                if (!await HasPythonAsync(exe, ct)) { log.Add($"{exe}：无法运行"); continue; }
-                if (!await HasNumpyAsync(exe, ct)) { log.Add($"{exe}：NumPy 不可用"); continue; }
-                if (!await ImportOkAsync(exe, "pptink_recog", bridgeDir, ct)) { log.Add($"{exe}：识别模块导入失败"); continue; }
+                bool isBundled = string.Equals(exe, bundled, StringComparison.OrdinalIgnoreCase);
+                if (!await HasPythonAsync(exe, ct))
+                {
+                    log.Add($"{exe}：无法运行");
+                    pythonFailure = isBundled ? "内置 Python 无法启动" : "系统 Python 无法启动";
+                    continue;
+                }
+                if (!await HasNumpyAsync(exe, ct))
+                {
+                    log.Add($"{exe}：NumPy 不可用");
+                    pythonFailure = isBundled ? "内置运行时的 NumPy 不可用" : "系统 Python 缺少 NumPy";
+                    continue;
+                }
+                if (!await ImportOkAsync(exe, "pptink_recog", bridgeDir, ct))
+                {
+                    log.Add($"{exe}：识别模块导入失败");
+                    pythonFailure = "识别模块 pptink_recog 导入失败";
+                    continue;
+                }
                 usable = exe;
                 break;
             }
 
             if (usable is not null)
             {
-                progress?.Report("依赖齐全，正在验证桥握手与识别……");
+                Report(AiStage.Python, AiStepState.Passed, "Python 运行时可用", 30);
+                Report(AiStage.Numpy, AiStepState.Passed, "NumPy 可用", 45);
+                Report(AiStage.Recognizer, AiStepState.Passed, "识别模块可用", 60);
+                Report(AiStage.Handshake, AiStepState.Running, "验证桥握手与合成识别…", 70);
+
                 var probe = await BridgeProbe.RunAsync(bridgeDir, script, usable, ct);
                 foreach (var s in probe.Stages) log.Add($"  · {s.Name}：{(s.Ok ? "通过" : "失败")} {s.Detail}");
                 if (probe.Ok)
+                {
+                    Report(AiStage.Handshake, AiStepState.Passed, "服务正常运行，识别已就绪", 100);
                     return new Result(true, "服务正常运行，AI 识别已就绪。", usable,
                         log.Count == 0 ? null : string.Join(Environment.NewLine, log.TakeLast(12)));
+                }
                 lastError = probe.Message;
-                progress?.Report("握手失败，正在诊断可能的问题……");
-                var failed = probe.Stages.FirstOrDefault(s => !s.Ok);
-                if (failed is not null)
-                    progress?.Report($"问题已确认：{failed.Name}（{failed.Detail}），正在自动修复……");
+                var failedStage = probe.Stages.FirstOrDefault(s => !s.Ok);
+                Report(AiStage.Handshake, AiStepState.Failed,
+                    failedStage is not null ? $"问题已确认：{failedStage.Name}" : "桥握手未通过", 75);
+                if (failedStage is not null)
+                    log.Add($"  问题已确认：{failedStage.Name}（{failedStage.Detail}）");
             }
             else
             {
                 lastError = "没有找到「Python + NumPy + 识别模块」齐备的解释器";
-                progress?.Report("未找到可用解释器，正在准备运行时……");
+                Report(AiStage.Python, AiStepState.Failed,
+                    pythonFailure is { Length: > 0 } ? pythonFailure : "没有可用的 Python 解释器", 20);
+                Report(AiStage.Numpy, AiStepState.Failed, "等待修复后复检", 25);
+                Report(AiStage.Recognizer, AiStepState.Failed, "等待修复后复检", 30);
             }
 
-            bool repaired = await RepairAsync(bridgeDir, bundled, repairs, progress, EnsureNetworkAllowed, ct, log);
+            Report(AiStage.Python, AiStepState.Running, "正在自动修复运行环境…", 80);
+            bool repaired = await RepairAsync(bridgeDir, bundled, attempts, Report, EnsureNetworkAllowed, ct, log);
             if (!repaired) break;
         }
 
+        Report(AiStage.Handshake, AiStepState.Failed, "自动修复已结束，服务仍未就绪", 100);
         return new Result(false,
-            $"已自动尝试 {repairs.Count} 项修复，AI 环境仍未就绪。最常见原因是当前网络不可用；恢复网络后点一次重试即可，其余设置无需改动。",
+            $"已尝试 {attempts.Count} 类自动修复，AI 环境仍未就绪。最常见原因是网络不可用；恢复网络后点一次重试即可。",
             null,
             (log.Count == 0 ? "" : string.Join(Environment.NewLine, log.TakeLast(20)))
             + Environment.NewLine + "最后错误：" + lastError);
@@ -465,48 +508,66 @@ internal static class AiProvisioner
     }
 
     /// <summary>按当前状态选择并执行一种修复；返回是否真的做了动作（否则停止循环）。</summary>
-    private static async Task<bool> RepairAsync(string bridgeDir, string bundled, HashSet<string> repairs,
-        IProgress<string>? progress, Func<string, Task<bool>> ensureNetwork, CancellationToken ct, List<string> log)
+    private static async Task<bool> RepairAsync(string bridgeDir, string bundled, Dictionary<string, int> attempts,
+        Action<AiStage, AiStepState, string, int> report, Func<string, Task<bool>> ensureNetwork,
+        CancellationToken ct, List<string> log)
     {
         string pyDir = Path.GetDirectoryName(bundled) ?? Path.Combine(bridgeDir, "python");
 
         if (!File.Exists(bundled))
         {
-            if (!repairs.Add("provision")) return false;
+            if (!TryBegin(attempts, "provision")) return false;
             if (!await ensureNetwork($"AI 需要联网下载嵌入式 Python 3.12（约 11MB）与 NumPy（约 16MB），安装到 {bridgeDir}\\python（不影响系统环境）。"))
                 return false;
-            progress?.Report("下载并配置嵌入式 Python 运行时……");
-            bool ok = await ProvisionBundledAsync(bridgeDir, progress, ct) && await HasNumpyAsync(bundled, ct);
+            report(AiStage.Python, AiStepState.Running, "下载并配置嵌入式 Python 运行时…", 80);
+            bool ok = await ProvisionBundledAsync(bridgeDir, null, ct) && await HasNumpyAsync(bundled, ct);
             log.Add(ok ? "已下载并配置嵌入式 Python + NumPy" : "嵌入式运行时下载/配置失败");
+            if (ok) report(AiStage.Python, AiStepState.Repaired, "嵌入式运行时已就绪", 90);
             return ok;
         }
 
-        // 内置运行时存在：修正 _pth → 重装 NumPy → 重建运行时（各尝试一次，避免死循环）
-        if (repairs.Add("pth") && TryRepairPth(pyDir))
+        // 内置运行时存在：修正 _pth → 重装 NumPy → 重建运行时（每种最多 2 次，
+        // 网络瞬时失败可以重试，但绝不死循环）
+        if (TryBegin(attempts, "pth") && TryRepairPth(pyDir))
         {
             log.Add("已修正嵌入式运行时 _pth（启用 site-packages / import site）");
+            report(AiStage.Python, AiStepState.Repaired, "已修正运行时配置 _pth", 85);
             return true;
         }
-        if (repairs.Add("numpy"))
+        if (TryBegin(attempts, "numpy"))
         {
             if (!await ensureNetwork($"AI 需要联网重新安装 NumPy（来自 PyPI，约 16MB），安装到 {bridgeDir}\\python。"))
                 return false;
-            progress?.Report("重新安装 NumPy……");
+            report(AiStage.Numpy, AiStepState.Running, "重新安装 NumPy…", 80);
             bool ok = await TryInstallNumpyAsync(bundled, bridgeDir, ct, () => ensureNetwork("重新安装 NumPy"))
                       && await HasNumpyAsync(bundled, ct);
             log.Add(ok ? "已重新安装 NumPy" : "NumPy 重装失败");
-            if (ok) return true;
+            if (ok)
+            {
+                report(AiStage.Numpy, AiStepState.Repaired, "NumPy 已重装", 90);
+                return true;
+            }
         }
-        if (repairs.Add("reprovision"))
+        if (TryBegin(attempts, "reprovision"))
         {
             if (!await ensureNetwork($"AI 运行时可能已损坏，需要联网重新下载嵌入式 Python（约 11MB）与 NumPy（约 16MB）。安装位置：{bridgeDir}\\python。"))
                 return false;
-            progress?.Report("重建嵌入式运行时……");
-            bool ok = await TryReprovisionAsync(bridgeDir, progress, ct);
+            report(AiStage.Python, AiStepState.Running, "重建嵌入式运行时…", 80);
+            bool ok = await TryReprovisionAsync(bridgeDir, null, ct);
             log.Add(ok ? "已重建嵌入式 Python 运行时" : "重建运行时失败（已回滚旧目录）");
+            if (ok) report(AiStage.Python, AiStepState.Repaired, "运行时已重建", 90);
             return ok;
         }
         return false;
+    }
+
+    /// <summary>同一修复手段最多尝试 max 次：网络瞬时失败允许重试一次，但绝不死循环。</summary>
+    private static bool TryBegin(Dictionary<string, int> attempts, string key, int max = 2)
+    {
+        attempts.TryGetValue(key, out int n);
+        if (n >= max) return false;
+        attempts[key] = n + 1;
+        return true;
     }
 
     /// <summary>解释器能否导入指定模块（工作目录=bridge 目录，保证能找到本地识别模块）。</summary>
